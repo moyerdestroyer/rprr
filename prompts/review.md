@@ -4,4 +4,4 @@ Inspect the checked-out repository and the pull request changes. Report actionab
 
 Focus on behavioral regressions, security issues, incorrect assumptions, broken integrations, and material performance problems. Mention missing tests only when they expose a specific risk in changed behavior. Skip speculative concerns, formatting, and style preferences.
 
-Return a JSON object with `summary` and `findings`. Each finding needs `file`, `line`, `severity`, `title`, and `message`. Do not modify the repository.
+Return only a JSON object with `summary` and `findings`; use an empty findings array when there are no actionable defects. Each finding needs a repository-relative `file`, a 1-based `line`, `severity` (`critical`, `high`, `medium`, or `low`), `title`, and `message`. Do not modify the repository.

@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { appPaths, type Config, createConfig, loadConfig } from "./config.ts";
+import { reviewPullRequest } from "./review.ts";
 import { initializeState } from "./state.ts";
 
 const help = `rprr — Ryan's PR Reviewer
@@ -8,9 +9,10 @@ const help = `rprr — Ryan's PR Reviewer
 Usage:
   rprr init [--agent-command EXECUTABLE] [--agent-arg ARG ...]
   rprr doctor
+  rprr review <PR-number-or-URL>
   rprr --help
 
-Review, poll, and status are planned for later milestones.`;
+Review prints a dry run only. Poll and status are planned.`;
 
 function commandAvailable(command: string): boolean {
   return Bun.which(command) !== null;
@@ -113,7 +115,12 @@ async function doctor(): Promise<void> {
   for (const [label, pass, success, failure] of checks) {
     console.log(`${pass ? "✓" : "✗"} ${label}: ${pass ? success : failure}`);
   }
-  console.log("ACP handshake check is planned for the review milestone.");
+  checks.push([
+    "Read-only sandbox",
+    process.platform === "linux" && commandAvailable("bwrap"),
+    "bubblewrap available",
+    "install bubblewrap on Linux",
+  ]);
   if (checks.some(([, pass]) => !pass)) process.exitCode = 1;
 }
 
@@ -128,6 +135,15 @@ export async function runCli(args: string[]): Promise<void> {
         if (rest.length) throw new Error("doctor does not accept arguments");
         await doctor();
         break;
+      case "review": {
+        const selector = rest[0];
+        if (rest.length !== 1 || !selector)
+          throw new Error("review requires one PR number or URL");
+        const config = await loadConfig();
+        const result = await reviewPullRequest(selector, config);
+        console.log(JSON.stringify({ ...result, dryRun: true }, null, 2));
+        break;
+      }
       case undefined:
       case "--help":
       case "-h":
