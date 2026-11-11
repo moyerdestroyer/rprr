@@ -2,11 +2,11 @@
 
 # rprr
 
-Ryan's PR Reviewer is a local-first CLI for reviewing GitHub pull requests through a configurable [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) coding agent. It uses your existing `gh` login. Review publication and automation are under development.
+Ryan's PR Reviewer is a local-first CLI for reviewing GitHub pull requests through a configurable [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) coding agent. It uses your existing `gh` login. Automated polling is under development.
 
 ## Current state
 
-`init` creates local configuration and an empty SQLite review database. `doctor` checks dependencies and configuration. `review` checks out a PR at its observed head, runs one ACP prompt in a read-only sandbox, validates the JSON response, and prints a dry run. `poll`, `status`, and publication are not available yet.
+`init` creates local configuration and an empty SQLite review database. `doctor` checks dependencies and configuration. `review` checks out a PR at its observed head, runs an ACP review in a read-only sandbox, validates the JSON response, and prints a dry run. `review --publish` submits a non-approving `COMMENT` review after checking the PR head and inline locations again. `poll` and `status` are not available yet.
 
 ## Requirements
 
@@ -36,9 +36,10 @@ rprr init --agent-command <executable> --agent-arg <first-argument>
 rprr doctor
 rprr review 123
 # or: rprr review https://github.com/OWNER/REPO/pull/123
+rprr review 123 --publish  # explicitly submit a COMMENT review
 ```
 
-Without `--agent-command`, `init` prompts for an executable in a terminal. Repeat `--agent-arg` for each argument. `init` requires an authenticated `gh` session and refuses to overwrite an existing config file. Edit the JSON file to change the command, arguments, or review settings later. The agent is launched only by `review`. Set `agent.env` in the config if the sandboxed agent needs credentials from environment variables.
+Without `--agent-command`, `init` prompts for an executable in a terminal. Repeat `--agent-arg` for each argument. `init` requires an authenticated `gh` session and refuses to overwrite an existing config file. Edit the JSON file to change the command, arguments, or review settings later. The agent is launched only by `review`. Set `agent.env` in the config if the sandboxed agent needs credentials from environment variables or a specific `HOME` for its login. For Command Code, `--no-session --no-auto-update acp` works as the agent arguments.
 
 Example configuration:
 
@@ -58,12 +59,12 @@ Mutable data follows XDG paths. `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CA
 | Review state             | `~/.local/state/rprr/reviews.sqlite` |
 | Cache and temporary data | `~/.cache/rprr/`                     |
 
-The database schema is a starting point for later review history. No review jobs are written by the current CLI. `review` never publishes to GitHub, even if `review.publish` is true in the config.
+The database schema is a starting point for later review history. No review jobs are written by the current CLI. Publication requires both `review.publish: true` in the config and an explicit `--publish` flag. Running it again can post a duplicate review; deduplication belongs to the planned polling phase.
 
 ## Planned workflow
 
 1. `review <PR>` inspects a PR in a temporary checkout through an ACP agent and validates structured findings.
-2. Publication will recheck the PR head, verify inline locations, and submit a `COMMENT` review through `gh`.
+2. Optional publication rechecks the PR head and base, verifies that each inline finding is on an added line, and submits a `COMMENT` review through `gh`.
 3. `poll` will discover explicit review requests, avoid duplicate reviews, retry failures, and exit after one run. Scheduling will remain external.
 4. `status` will show recent and failed jobs.
 
@@ -85,7 +86,7 @@ bun run check      # local offline checks: types, Biome, Knip, and tests
 
 - [x] Phase 1: package, executable, XDG config/state, `init`, and basic `doctor`
 - [x] Phase 2: manual ACP review and dry-run output
-- [ ] Phase 3: validated GitHub review publication
+- [x] Phase 3: validated GitHub review publication
 - [ ] Phase 4: idempotent review-request polling
 - [ ] Phase 5: systemd user timer or cron documentation
 

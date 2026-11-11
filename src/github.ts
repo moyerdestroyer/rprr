@@ -7,6 +7,7 @@ const prSchema = z.object({
   url: z.string().url(),
   number: z.number().int().positive(),
   title: z.string(),
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]),
   body: z.string().nullable(),
   headRefOid: z.string().regex(/^[0-9a-f]{40}$/),
   baseRefOid: z.string().regex(/^[0-9a-f]{40}$/),
@@ -46,7 +47,7 @@ export async function loadPullRequest(selector: string): Promise<PullRequest> {
     "view",
     selector,
     "--json",
-    "url,number,title,body,headRefOid,baseRefOid",
+    "url,number,title,state,body,headRefOid,baseRefOid",
   ]);
   const pr = prSchema.parse(JSON.parse(raw));
   const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/\d+$/.exec(

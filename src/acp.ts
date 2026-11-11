@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { Config } from "./config.ts";
+import { parseReview } from "./findings.ts";
 
 function permission(
   params: acp.RequestPermissionRequest,
@@ -72,7 +73,7 @@ async function exchange(
     Writable.toWeb(child.stdin),
     Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
   );
-  const result = await acp
+  await acp
     .client({ name: "rprr" })
     .onRequest(acp.methods.client.session.requestPermission, (ctx) =>
       permission(ctx.params),
@@ -96,13 +97,26 @@ async function exchange(
         cwd,
         mcpServers: [],
       });
-      return ctx.request(acp.methods.agent.session.prompt, {
-        sessionId: session.sessionId,
-        prompt: [{ type: "text", text: prompt }],
-      });
+      const prompts = [
+        prompt,
+        'Complete the review now. Return only a JSON object with "summary" and "findings". Do not narrate progress.',
+      ];
+      for (const text of prompts) {
+        response = "";
+        const result = await ctx.request(acp.methods.agent.session.prompt, {
+          sessionId: session.sessionId,
+          prompt: [{ type: "text", text }],
+        });
+        if (result.stopReason !== "end_turn")
+          throw new Error(`ACP agent stopped: ${result.stopReason}`);
+        try {
+          parseReview(response, Number.MAX_SAFE_INTEGER);
+          return;
+        } catch {
+          // A follow-up turn asks the agent to finish in the required format.
+        }
+      }
     });
-  if (result.stopReason !== "end_turn")
-    throw new Error(`ACP agent stopped: ${result.stopReason}`);
   if (!response.trim()) throw new Error("ACP agent returned no review text");
   return response;
 }

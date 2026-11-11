@@ -9,10 +9,10 @@ const help = `rprr — Ryan's PR Reviewer
 Usage:
   rprr init [--agent-command EXECUTABLE] [--agent-arg ARG ...]
   rprr doctor
-  rprr review <PR-number-or-URL>
+  rprr review <PR-number-or-URL> [--publish]
   rprr --help
 
-Review prints a dry run only. Poll and status are planned.`;
+Review prints a dry run by default. --publish submits a COMMENT review.`;
 
 function commandAvailable(command: string): boolean {
   return Bun.which(command) !== null;
@@ -136,12 +136,16 @@ export async function runCli(args: string[]): Promise<void> {
         await doctor();
         break;
       case "review": {
-        const selector = rest[0];
-        if (rest.length !== 1 || !selector)
-          throw new Error("review requires one PR number or URL");
+        const publish = rest.includes("--publish");
+        const selectors = rest.filter((value) => value !== "--publish");
+        const selector = selectors[0];
+        if (!selector || selectors.length !== 1 || rest.length > 2)
+          throw new Error(
+            "review requires one PR number or URL and optional --publish",
+          );
         const config = await loadConfig();
-        const result = await reviewPullRequest(selector, config);
-        console.log(JSON.stringify({ ...result, dryRun: true }, null, 2));
+        const result = await reviewPullRequest(selector, config, publish);
+        console.log(JSON.stringify({ ...result, dryRun: !publish }, null, 2));
         break;
       }
       case undefined:

@@ -17,14 +17,60 @@ const reviewSchema = z.object({
 
 export type Review = z.infer<typeof reviewSchema>;
 
-function jsonText(response: string): string {
-  const trimmed = response.trim();
-  const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
-  return match?.[1] ?? trimmed;
+function nextQuoteState(state: number, char: string | undefined): number {
+  if (state === 2) return 1;
+  if (state === 1) {
+    if (char === "\\") return 2;
+    return char === '"' ? 0 : 1;
+  }
+  return char === '"' ? 1 : 0;
+}
+
+function objectEnd(response: string, start: number): number {
+  let depth = 0;
+  let quoteState = 0;
+  for (let index = start; index < response.length; index++) {
+    const char = response[index];
+    const nextState = nextQuoteState(quoteState, char);
+    if (quoteState !== 0 || nextState !== 0) {
+      quoteState = nextState;
+      continue;
+    }
+    if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function jsonObjects(response: string): Array<{ text: string; end: number }> {
+  const objects: Array<{ text: string; end: number }> = [];
+  for (let start = response.indexOf("{"); start >= 0; ) {
+    const end = objectEnd(response, start);
+    if (end < 0) break;
+    objects.push({ text: response.slice(start, end + 1), end });
+    start = response.indexOf("{", end + 1);
+  }
+  return objects.reverse();
 }
 
 export function parseReview(response: string, maxFindings: number): Review {
-  const review = reviewSchema.parse(JSON.parse(jsonText(response)));
+  let review: Review | undefined;
+  for (const candidate of jsonObjects(response)) {
+    const tail = response.slice(candidate.end + 1);
+    if (!/^\s*(?:```\s*)?(?:taste learning failed[^\n]*\s*)?$/.test(tail))
+      continue;
+    try {
+      review = reviewSchema.parse(JSON.parse(candidate.text));
+      break;
+    } catch {
+      // Progress messages and diagnostics may contain unrelated JSON.
+    }
+  }
+  if (!review) throw new Error("Agent did not return valid review JSON");
   if (review.findings.length > maxFindings)
     throw new Error(`Agent returned more than ${maxFindings} findings`);
   for (const finding of review.findings) {

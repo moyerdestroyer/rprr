@@ -8,11 +8,20 @@ import {
   validateFindingLocations,
 } from "./findings.ts";
 import { checkoutPullRequest, loadPullRequest } from "./github.ts";
+import { publishReview } from "./publish.ts";
 
 export async function reviewPullRequest(
   selector: string,
   config: Config,
-): Promise<{ url: string; head: string; review: Review }> {
+  publish = false,
+): Promise<{
+  url: string;
+  head: string;
+  review: Review;
+  publishedReview?: { id: number; url: string };
+}> {
+  if (publish && !config.review.publish)
+    throw new Error("Review publication is disabled in configuration");
   const pr = await loadPullRequest(selector);
   const checkout = await checkoutPullRequest(pr);
   try {
@@ -36,10 +45,14 @@ export async function reviewPullRequest(
     );
     const review = parseReview(output, config.review.maxFindings);
     await validateFindingLocations(review, checkout.path);
+    const publishedReview = publish
+      ? await publishReview(pr, review, checkout.diff)
+      : undefined;
     return {
       url: pr.url,
       head: pr.headRefOid,
       review,
+      ...(publishedReview ? { publishedReview } : {}),
     };
   } finally {
     await checkout.cleanup();

@@ -25,6 +25,15 @@ test("review response validates finding paths and limit", () => {
     ],
   };
   expect(parseReview(JSON.stringify(valid), 1)).toEqual(valid);
+  expect(
+    parseReview(
+      `Checking files...\n${JSON.stringify(valid)}\ntaste learning failed`,
+      1,
+    ),
+  ).toEqual(valid);
+  expect(() =>
+    parseReview(`${JSON.stringify(valid)}\nStill reviewing the PR`, 1),
+  ).toThrow();
   expect(() => parseReview(JSON.stringify(valid), 0)).toThrow();
   expect(() =>
     parseReview(

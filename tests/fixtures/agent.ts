@@ -48,10 +48,12 @@ acp
         sessionUpdate: "agent_message_chunk",
         content: {
           type: "text",
-          text: JSON.stringify({
-            summary: `${blocked ? "write blocked" : "write succeeded"}; ${decision.outcome.outcome === "selected" ? decision.outcome.optionId : "cancelled"}`,
-            findings: [],
-          }),
+          text:
+            process.env.RPRR_TEST_RESPONSE ??
+            JSON.stringify({
+              summary: `${blocked ? "write blocked" : "write succeeded"}; ${decision.outcome.outcome === "selected" ? decision.outcome.optionId : "cancelled"}`,
+              findings: [],
+            }),
         },
       },
     });
