@@ -70,10 +70,12 @@ The architecture keeps GitHub orchestration, agent execution, and publication se
 
 ```bash
 bun run typecheck  # strict TypeScript
-bun run lint       # Biome lint and formatting check
+bun run lint       # Biome lint, complexity, and formatting check
 bun run format     # apply formatting
-bun test           # Bun tests
-bun run check      # all checks
+bun run knip       # unused files, exports, dependencies, and import cycles
+bun run coverage   # Bun tests with coverage report
+bun run audit      # check lockfile for known vulnerabilities (requires network)
+bun run check      # local offline checks: types, Biome, Knip, and tests
 ```
 
 ## Roadmap
@@ -83,5 +85,7 @@ bun run check      # all checks
 - [ ] Phase 3: validated GitHub review publication
 - [ ] Phase 4: idempotent review-request polling
 - [ ] Phase 5: systemd user timer or cron documentation
+
+Coverage currently reports only modules loaded by the tests, so the CLI is not included in its percentage yet. There is no coverage threshold until CLI tests make that metric representative.
 
 The original development brief defines the v0.1 acceptance criteria. The Phase 1 commands alone do not satisfy them.

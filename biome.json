@@ -4,5 +4,11 @@
   "files": { "includes": ["**", "!node_modules", "!bun.lock"] },
   "formatter": { "indentStyle": "space", "indentWidth": 2 },
   "javascript": { "formatter": { "quoteStyle": "double" } },
-  "linter": { "enabled": true, "rules": { "preset": "recommended" } }
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "complexity": { "noExcessiveCognitiveComplexity": "error" }
+    }
+  }
 }

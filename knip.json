@@ -1,0 +1,4 @@
+{
+  "includeEntryExports": true,
+  "rules": { "cycles": "error" }
+}

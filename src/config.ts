@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 
-export const configSchema = z.object({
+const configSchema = z.object({
   agent: z.object({
     command: z.string().min(1),
     args: z.array(z.string()),
