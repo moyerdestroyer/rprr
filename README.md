@@ -93,6 +93,8 @@ bun run check      # local offline checks: types, Biome, Knip, and tests
 bun run package:check # pack and smoke test an isolated installation
 ```
 
+GitHub Actions runs the local quality gate, dependency audit, and packed global installation as separate checks on pushes to `main`, pull requests, and manual dispatch. It uses the pinned Bun version in `.bun-version` and `bun ci` for lockfile reproducibility. The workflow has read-only repository permission and never runs `rprr poll` or publishes reviews. Validate workflow edits locally with `actionlint .github/workflows/*.yml`.
+
 ## Roadmap
 
 - [x] Phase 1: package, executable, XDG config/state, `init`, and basic `doctor`
