@@ -1,0 +1,176 @@
+import { Database } from "bun:sqlite";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Config } from "../src/config.ts";
+import type { PullRequest } from "../src/github.ts";
+import { pollRequested } from "../src/poll.ts";
+import { ReviewStore } from "../src/state.ts";
+
+const directories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    directories
+      .splice(0)
+      .map((path) => rm(path, { recursive: true, force: true })),
+  );
+});
+
+async function storePath(): Promise<string> {
+  const path = await mkdtemp(join(tmpdir(), "rprr-poll-test-"));
+  directories.push(path);
+  return join(path, "reviews.sqlite");
+}
+
+const config: Config = {
+  agent: { command: "fixture", args: [] },
+  github: { trigger: "review-request" },
+  review: { publish: true, timeoutSeconds: 30, maxFindings: 20 },
+};
+
+const pr: PullRequest = {
+  url: "https://github.com/org/repo/pull/12",
+  repository: "org/repo",
+  number: 12,
+  title: "Change",
+  state: "OPEN",
+  body: null,
+  headRefOid: "a".repeat(40),
+  baseRefOid: "b".repeat(40),
+};
+
+test("claims each head once, retries failures, and recovers posted reviews", async () => {
+  const path = await storePath();
+  const store = await ReviewStore.open(path);
+  let current = pr;
+  let requested = true;
+  let posted: { id: number; url: string } | undefined;
+  let reviewCalls = 0;
+  let failReview = false;
+  const deps = {
+    load: async () => current,
+    requested: async () => requested,
+    existing: async () => posted,
+    review: async (
+      _url: string,
+      _config: Config,
+      _publish?: boolean,
+      before?: (pr: PullRequest) => Promise<void>,
+    ) => {
+      reviewCalls++;
+      await before?.(current);
+      if (failReview) throw new Error("agent failed");
+      posted = {
+        id: reviewCalls,
+        url: `${current.url}#pullrequestreview-${reviewCalls}`,
+      };
+      return {
+        url: current.url,
+        head: current.headRefOid,
+        review: { summary: "Clear", findings: [] },
+        publishedReview: posted,
+      };
+    },
+  };
+  try {
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).skipped,
+    ).toBe(1);
+    expect(reviewCalls).toBe(1);
+
+    current = { ...pr, headRefOid: "c".repeat(40) };
+    posted = undefined;
+    failReview = true;
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).failed[0]
+        ?.error,
+    ).toBe("agent failed");
+    expect(store.recent()[0]?.status).toBe("failed");
+    failReview = false;
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(store.recent()[0]?.published_review_id).toBe(3);
+
+    current = { ...pr, headRefOid: "d".repeat(40) };
+    posted = { id: 99, url: `${pr.url}#pullrequestreview-99` };
+    requested = false;
+    expect(
+      (await pollRequested([], "ryan", config, store, deps)).completed,
+    ).toBe(0);
+    const claim = store.claim(
+      current.repository,
+      current.number,
+      current.headRefOid,
+      "ryan",
+      30,
+    );
+    if (!claim) throw new Error("Expected claim");
+    store.fail(claim, "crash after publish");
+    expect(
+      (await pollRequested([], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(store.recent()[0]?.published_review_id).toBe(99);
+    expect(reviewCalls).toBe(3);
+  } finally {
+    store.close();
+  }
+});
+
+test("stale claims can be reclaimed without an old worker completing them", async () => {
+  const path = await storePath();
+  const store = await ReviewStore.open(path);
+  try {
+    const old = store.claim("org/repo", 1, "head", "ryan", 30);
+    if (!old) throw new Error("Expected claim");
+    expect(store.claim("org/repo", 1, "head", "ryan", 30)).toBeUndefined();
+    const db = new Database(path);
+    db.query("UPDATE reviews SET started_at = ? WHERE id = ?").run(
+      "2000-01-01T00:00:00.000Z",
+      old.id,
+    );
+    db.close();
+    expect(store.recoverable(30)).toEqual([
+      "https://github.com/org/repo/pull/1",
+    ]);
+    const next = store.claim("org/repo", 1, "head", "ryan", 30);
+    if (!next) throw new Error("Expected replacement claim");
+    expect(store.isActive(old)).toBe(false);
+    expect(store.isActive(next)).toBe(true);
+    expect(() => store.complete(old, 1)).toThrow();
+    store.complete(next, 2);
+    expect(store.claim("org/repo", 1, "head", "ryan", 30)).toBeUndefined();
+  } finally {
+    store.close();
+  }
+});
+
+test("withdrawn requests do not publish", async () => {
+  const store = await ReviewStore.open(await storePath());
+  let checks = 0;
+  const deps = {
+    load: async () => pr,
+    requested: async () => ++checks === 1,
+    existing: async () => undefined,
+    review: async (
+      _url: string,
+      _config: Config,
+      _publish?: boolean,
+      before?: (pr: PullRequest) => Promise<void>,
+    ) => {
+      await before?.(pr);
+      throw new Error("Should not publish");
+    },
+  };
+  try {
+    const result = await pollRequested([pr.url], "ryan", config, store, deps);
+    expect(result.failed[0]?.error).toBe("Review request was withdrawn");
+    expect(store.recent()[0]?.status).toBe("failed");
+  } finally {
+    store.close();
+  }
+});

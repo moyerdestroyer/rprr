@@ -1,8 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { appPaths, type Config, createConfig, loadConfig } from "./config.ts";
+import { currentLogin, requestedPullRequests } from "./github.ts";
+import { pollRequested } from "./poll.ts";
 import { reviewPullRequest } from "./review.ts";
-import { initializeState } from "./state.ts";
+import { initializeState, ReviewStore } from "./state.ts";
 
 const help = `rprr — Ryan's PR Reviewer
 
@@ -10,9 +12,12 @@ Usage:
   rprr init [--agent-command EXECUTABLE] [--agent-arg ARG ...]
   rprr doctor
   rprr review <PR-number-or-URL> [--publish]
+  rprr poll
+  rprr status
   rprr --help
 
-Review prints a dry run by default. --publish submits a COMMENT review.`;
+Review prints a dry run by default. --publish submits a COMMENT review.
+Poll reviews direct requests once and exits; run it from a local scheduler.`;
 
 function commandAvailable(command: string): boolean {
   return Bun.which(command) !== null;
@@ -124,6 +129,34 @@ async function doctor(): Promise<void> {
   if (checks.some(([, pass]) => !pass)) process.exitCode = 1;
 }
 
+async function poll(): Promise<void> {
+  const config = await loadConfig();
+  if (!config.review.publish)
+    throw new Error("Polling requires review.publish: true in configuration");
+  const store = await ReviewStore.open();
+  try {
+    const result = await pollRequested(
+      await requestedPullRequests(),
+      await currentLogin(),
+      config,
+      store,
+    );
+    console.log(JSON.stringify(result, null, 2));
+    if (result.failed.length) process.exitCode = 1;
+  } finally {
+    store.close();
+  }
+}
+
+async function status(): Promise<void> {
+  const store = await ReviewStore.open();
+  try {
+    console.log(JSON.stringify(store.recent(), null, 2));
+  } finally {
+    store.close();
+  }
+}
+
 export async function runCli(args: string[]): Promise<void> {
   try {
     const [command, ...rest] = args;
@@ -148,6 +181,14 @@ export async function runCli(args: string[]): Promise<void> {
         console.log(JSON.stringify({ ...result, dryRun: !publish }, null, 2));
         break;
       }
+      case "poll":
+        if (rest.length) throw new Error("poll does not accept arguments");
+        await poll();
+        break;
+      case "status":
+        if (rest.length) throw new Error("status does not accept arguments");
+        await status();
+        break;
       case undefined:
       case "--help":
       case "-h":

@@ -7,13 +7,18 @@ import {
   type Review,
   validateFindingLocations,
 } from "./findings.ts";
-import { checkoutPullRequest, loadPullRequest } from "./github.ts";
+import {
+  checkoutPullRequest,
+  loadPullRequest,
+  type PullRequest,
+} from "./github.ts";
 import { publishReview } from "./publish.ts";
 
 export async function reviewPullRequest(
   selector: string,
   config: Config,
   publish = false,
+  beforePublish?: (pr: PullRequest) => Promise<void>,
 ): Promise<{
   url: string;
   head: string;
@@ -45,6 +50,7 @@ export async function reviewPullRequest(
     );
     const review = parseReview(output, config.review.maxFindings);
     await validateFindingLocations(review, checkout.path);
+    if (publish) await beforePublish?.(pr);
     const publishedReview = publish
       ? await publishReview(pr, review, checkout.diff)
       : undefined;

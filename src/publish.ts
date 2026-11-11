@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { validateInlineLocations } from "./diff.ts";
 import type { Review } from "./findings.ts";
-import { loadPullRequest, type PullRequest } from "./github.ts";
+import {
+  existingReview,
+  loadPullRequest,
+  type PullRequest,
+  reviewMarker,
+} from "./github.ts";
 
 const responseSchema = z.object({
   id: z.number().int().positive(),
@@ -13,7 +18,7 @@ export function reviewPayload(pr: PullRequest, review: Review) {
   return {
     commit_id: pr.headRefOid,
     event: "COMMENT" as const,
-    body: `RPRR review (non-approving)\n\n${review.summary}`,
+    body: `${reviewMarker}\n\n${review.summary}`,
     comments: review.findings.map((finding) => ({
       path: finding.file,
       line: finding.line,
@@ -47,6 +52,8 @@ export async function publishReview(
   validateInlineLocations(review, diff);
   const current = await loadPullRequest(pr.url);
   verifyUnchanged(pr, current);
+  const previous = await existingReview(pr);
+  if (previous) return previous;
   const endpoint = `repos/${pr.repository}/pulls/${pr.number}/reviews`;
   const child = Bun.spawn(
     ["gh", "api", endpoint, "--method", "POST", "--input", "-"],

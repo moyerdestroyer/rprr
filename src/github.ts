@@ -14,6 +14,23 @@ const prSchema = z.object({
 });
 
 export type PullRequest = z.infer<typeof prSchema> & { repository: string };
+export const reviewMarker = "RPRR review (non-approving)";
+
+const searchResultSchema = z.array(z.object({ url: z.string().url() }));
+const requestedSchema = z.object({
+  users: z.array(z.object({ login: z.string() })),
+});
+const remoteReviewsSchema = z.array(
+  z.array(
+    z.object({
+      id: z.number().int().positive(),
+      state: z.string(),
+      body: z.string().nullable(),
+      commit_id: z.string(),
+      html_url: z.string().url(),
+    }),
+  ),
+);
 
 async function run(command: string[], cwd?: string): Promise<string> {
   const process = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
@@ -55,6 +72,64 @@ export async function loadPullRequest(selector: string): Promise<PullRequest> {
   );
   if (!match?.[1]) throw new Error(`Unsupported pull request URL: ${pr.url}`);
   return { ...pr, repository: match[1] };
+}
+
+export async function requestedPullRequests(): Promise<string[]> {
+  const raw = await run([
+    "gh",
+    "search",
+    "prs",
+    "user-review-requested:@me",
+    "--state",
+    "open",
+    "--json",
+    "url",
+    "--limit",
+    "1000",
+  ]);
+  const results = searchResultSchema.parse(JSON.parse(raw));
+  if (results.length === 1000)
+    throw new Error("Review request search reached GitHub's 1000-result limit");
+  return [...new Set(results.map((result) => result.url))];
+}
+
+export async function currentLogin(): Promise<string> {
+  const raw = await run(["gh", "api", "user", "--jq", ".login"]);
+  const login = raw.trim();
+  if (!/^[A-Za-z0-9-]+$/.test(login))
+    throw new Error("Could not determine GitHub login");
+  return login;
+}
+
+export async function isReviewRequested(
+  pr: PullRequest,
+  login: string,
+): Promise<boolean> {
+  const endpoint = `repos/${pr.repository}/pulls/${pr.number}/requested_reviewers`;
+  const response = requestedSchema.parse(
+    JSON.parse(await run(["gh", "api", endpoint])),
+  );
+  return response.users.some(
+    (user) => user.login.toLowerCase() === login.toLowerCase(),
+  );
+}
+
+export async function existingReview(
+  pr: PullRequest,
+): Promise<{ id: number; url: string } | undefined> {
+  const endpoint = `repos/${pr.repository}/pulls/${pr.number}/reviews`;
+  const pages = remoteReviewsSchema.parse(
+    JSON.parse(await run(["gh", "api", endpoint, "--paginate", "--slurp"])),
+  );
+  const match = pages
+    .flat()
+    .find(
+      (review) =>
+        review.state === "COMMENTED" &&
+        review.commit_id === pr.headRefOid &&
+        review.body?.startsWith(reviewMarker),
+    );
+  return match ? { id: match.id, url: match.html_url } : undefined;
 }
 
 export async function checkoutPullRequest(

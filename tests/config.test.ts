@@ -52,3 +52,25 @@ test("SQLite state initializes idempotently with review uniqueness", async () =>
     db.close();
   }
 });
+
+test("existing review databases gain the claim token column", async () => {
+  const path = join(await temporaryPath(), "reviews.sqlite");
+  const db = new Database(path, { create: true });
+  db.exec(`CREATE TABLE reviews (
+    id INTEGER PRIMARY KEY, repository TEXT NOT NULL, pr_number INTEGER NOT NULL,
+    head_sha TEXT NOT NULL, request_identity TEXT, status TEXT NOT NULL,
+    started_at TEXT, completed_at TEXT, published_review_id INTEGER,
+    error TEXT, UNIQUE (repository, pr_number, head_sha)
+  )`);
+  db.close();
+  await initializeState(path);
+  const migrated = new Database(path);
+  try {
+    const columns = migrated
+      .query("PRAGMA table_info(reviews)")
+      .all() as Array<{ name: string }>;
+    expect(columns.some(({ name }) => name === "attempt_id")).toBe(true);
+  } finally {
+    migrated.close();
+  }
+});
