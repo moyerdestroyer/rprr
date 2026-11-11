@@ -1,0 +1,31 @@
+{
+  "name": "rprr",
+  "version": "0.1.0",
+  "description": "Ryan's local-first GitHub PR reviewer",
+  "type": "module",
+  "bin": {
+    "rprr": "./bin/rprr.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "prompts",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "bun run typecheck && bun run lint && bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.6",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}
