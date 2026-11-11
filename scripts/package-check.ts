@@ -50,6 +50,7 @@ try {
     "package/examples/systemd/rprr.service",
     "package/examples/systemd/rprr.timer",
     "package/assets/mascot-v3.png",
+    "package/assets/mascot-banner.png",
   ]) {
     if (!entries.includes(expected))
       throw new Error(`Package is missing ${expected}`);
