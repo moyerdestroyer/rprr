@@ -93,4 +93,4 @@ GitHub Actions runs the local quality gate, dependency audit, and packed global 
 
 Coverage percentages include modules loaded by in-process tests. CLI lifecycle tests run in subprocesses, so their execution is not counted in that report.
 
-<p align="center"><img src="assets/mascot-banner.png" alt="RPRR's masked blonde reviewer reclining on a burgundy chaise with a pull-request magnifying glass" width="100%"></p>
+<p align="center"><img src="assets/mascot-banner-v2.png" alt="RPRR's masked blonde reviewer reclining on a burgundy chaise, with one boot on each leg" width="100%"></p>
