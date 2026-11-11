@@ -41,7 +41,7 @@ rprr poll                  # process direct review requests once
 rprr status                # show the 20 most recent jobs
 ```
 
-Without `--agent-command`, `init` prompts for an executable in a terminal. Repeat `--agent-arg` for each argument. `init` requires an authenticated `gh` session and refuses to overwrite an existing config file. Edit the JSON file to change the command, arguments, or review settings later. The agent is launched only by `review`. Set `agent.env` in the config if the sandboxed agent needs credentials from environment variables or a specific `HOME` for its login. For Command Code, `--no-session --no-auto-update acp` works as the agent arguments.
+Without `--agent-command`, `init` prompts for an executable in a terminal. Repeat `--agent-arg` for each argument. `init` requires an authenticated `gh` session and refuses to overwrite an existing config file. Edit the JSON file to change the command, arguments, or review settings later. The agent is launched by `review` or by `poll` when a direct request is found. Set `agent.env` in the config if the sandboxed agent needs credentials from environment variables or a specific `HOME` for its login. For Command Code, `--no-session --no-auto-update acp` works as the agent arguments.
 
 Example configuration:
 
@@ -62,6 +62,8 @@ Mutable data follows XDG paths. `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CA
 | Cache and temporary data | `~/.cache/rprr/`                     |
 
 Polling requires `review.publish: true` in the config. Manual publication requires that setting and an explicit `--publish` flag. Before posting, publication checks GitHub for an existing RPRR `COMMENT` review on the same head. Polling records one claim per repository, PR, and head in SQLite, retries failures, and reconciles posted reviews after interrupted runs. A new head is eligible for a new review. `poll` exits after one pass; run it manually or schedule it locally. It handles direct requests for the signed-in `gh` user, not team review requests.
+
+For recurring local runs, see the [systemd user timer and cron setup](docs/scheduling.md). Scheduling is opt-in and runs under your own account.
 
 ## Planned workflow
 
@@ -90,7 +92,7 @@ bun run check      # local offline checks: types, Biome, Knip, and tests
 - [x] Phase 2: manual ACP review and dry-run output
 - [x] Phase 3: validated GitHub review publication
 - [x] Phase 4: idempotent review-request polling
-- [ ] Phase 5: systemd user timer or cron documentation
+- [x] Phase 5: systemd user timer or cron documentation
 
 Coverage currently reports only modules loaded by the tests, so the CLI is not included in its percentage yet. There is no coverage threshold until CLI tests make that metric representative.
 
