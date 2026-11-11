@@ -93,6 +93,7 @@ test("publication disabled in config fails before accessing GitHub", async () =>
     reviewPullRequest(
       "1",
       {
+        schemaVersion: 1,
         agent: { command: "no-agent", args: [] },
         github: { trigger: "review-request" },
         review: { publish: false, timeoutSeconds: 10, maxFindings: 1 },

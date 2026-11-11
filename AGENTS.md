@@ -4,6 +4,7 @@
 
 - After every code change, run `bun run check` and fix all failures before committing or pushing. This runs strict TypeScript, Biome lint/format/complexity checks, Knip dead-code and cycle checks, and Bun tests with coverage.
 - After changing dependencies or `bun.lock`, also run `bun run audit`. It requires network access.
+- After changing CLI installation, packaging, or service setup, also run `bun run package:check` to test the packed artifact from an isolated home.
 - Add tests for changed behavior and meaningful failure paths. Read the coverage report, but do not treat its percentage as whole-project coverage until tests load the CLI.
 
 ## Architecture and factoring

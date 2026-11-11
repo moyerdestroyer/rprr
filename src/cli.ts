@@ -1,93 +1,41 @@
-import { mkdir } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
-import { appPaths, type Config, createConfig, loadConfig } from "./config.ts";
+import { appPaths, loadConfig } from "./config.ts";
+import { configCommand } from "./config-command.ts";
 import { currentLogin, requestedPullRequests } from "./github.ts";
+import {
+  commandAvailable,
+  githubAuthenticated,
+  healthSnapshot,
+  probeAgent,
+} from "./health.ts";
 import { pollRequested } from "./poll.ts";
 import { reviewPullRequest } from "./review.ts";
-import { initializeState, ReviewStore } from "./state.ts";
+import {
+  disableService,
+  enableService,
+  installService,
+  serviceStatus,
+  uninstallService,
+} from "./service.ts";
+import { setup } from "./setup.ts";
+import { ReviewStore } from "./state.ts";
 
 const help = `rprr — Ryan's PR Reviewer
 
 Usage:
-  rprr init [--agent-command EXECUTABLE] [--agent-arg ARG ...]
-  rprr doctor
+  rprr setup [--agent-command EXECUTABLE] [--agent-arg ARG ...] [--publish] [--dry-run] [--skip-agent-probe]
+  rprr init [setup options]
+  rprr doctor [--deep]
+  rprr config show|validate|set|edit
   rprr review <PR-number-or-URL> [--publish]
   rprr poll
   rprr status
+  rprr service install|enable|disable|status|uninstall
   rprr --help
 
 Review prints a dry run by default. --publish submits a COMMENT review.
 Poll reviews direct requests once and exits; run it from a local scheduler.`;
 
-function commandAvailable(command: string): boolean {
-  return Bun.which(command) !== null;
-}
-
-function githubAuthenticated(): boolean {
-  if (!commandAvailable("gh")) return false;
-  return (
-    Bun.spawnSync(["gh", "auth", "status"], {
-      stdout: "ignore",
-      stderr: "ignore",
-    }).exitCode === 0
-  );
-}
-
-function initOptions(args: string[]): {
-  command?: string;
-  agentArgs: string[];
-} {
-  const options: { command?: string; agentArgs: string[] } = { agentArgs: [] };
-  for (let index = 0; index < args.length; index++) {
-    const token = args[index];
-    if (token !== "--agent-command" && token !== "--agent-arg") {
-      throw new Error(`Unknown init option: ${token}`);
-    }
-    const value = args[++index];
-    if (value === undefined) throw new Error(`${token} requires a value`);
-    if (token === "--agent-command") options.command = value;
-    else options.agentArgs.push(value);
-  }
-  return options;
-}
-
-async function init(args: string[]): Promise<void> {
-  if (!githubAuthenticated())
-    throw new Error(
-      "GitHub CLI is not authenticated. Run `gh auth login` first.",
-    );
-  const options = initOptions(args);
-  let command = options.command;
-  if (!command) {
-    if (!process.stdin.isTTY)
-      throw new Error("Pass --agent-command when running without a terminal.");
-    const prompt = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
-    try {
-      command = (await prompt.question("ACP agent executable: ")).trim();
-    } finally {
-      prompt.close();
-    }
-  }
-  if (!command) throw new Error("An ACP agent executable is required.");
-  if (!commandAvailable(command))
-    throw new Error(`Agent executable not found: ${command}`);
-  const config: Config = {
-    agent: { command, args: options.agentArgs },
-    github: { trigger: "review-request" },
-    review: { publish: true, timeoutSeconds: 900, maxFindings: 20 },
-  };
-  const paths = appPaths();
-  await createConfig(config, paths.config);
-  await initializeState(paths.state);
-  await mkdir(paths.cache, { recursive: true, mode: 0o700 });
-  console.log(`Created ${paths.config}`);
-  console.log(`Initialized ${paths.state}`);
-}
-
-async function doctor(): Promise<void> {
+async function doctor(deep: boolean): Promise<void> {
   const checks: Array<[string, boolean, string, string]> = [
     ["Bun", true, Bun.version, "install Bun"],
     ["Git", commandAvailable("git"), "available", "install Git"],
@@ -102,7 +50,7 @@ async function doctor(): Promise<void> {
   const paths = appPaths();
   try {
     const config = await loadConfig(paths.config);
-    checks.push(["Configuration", true, paths.config, "run rprr init"]);
+    checks.push(["Configuration", true, paths.config, "run rprr setup"]);
     checks.push([
       "ACP agent executable",
       commandAvailable(config.agent.command),
@@ -117,16 +65,33 @@ async function doctor(): Promise<void> {
       error instanceof Error ? error.message : String(error),
     ]);
   }
-  for (const [label, pass, success, failure] of checks) {
-    console.log(`${pass ? "✓" : "✗"} ${label}: ${pass ? success : failure}`);
-  }
   checks.push([
     "Read-only sandbox",
     process.platform === "linux" && commandAvailable("bwrap"),
     "bubblewrap available",
     "install bubblewrap on Linux",
   ]);
+  if (deep) checks.push(await handshakeCheck(paths.config));
+  for (const [label, pass, success, failure] of checks) {
+    console.log(`${pass ? "✓" : "✗"} ${label}: ${pass ? success : failure}`);
+  }
   if (checks.some(([, pass]) => !pass)) process.exitCode = 1;
+}
+
+async function handshakeCheck(
+  path: string,
+): Promise<[string, boolean, string, string]> {
+  try {
+    await probeAgent(await loadConfig(path));
+    return ["ACP handshake", true, "review response validated", ""];
+  } catch (error) {
+    return [
+      "ACP handshake",
+      false,
+      "",
+      error instanceof Error ? error.message : String(error),
+    ];
+  }
 }
 
 async function poll(): Promise<void> {
@@ -134,6 +99,7 @@ async function poll(): Promise<void> {
   if (!config.review.publish)
     throw new Error("Polling requires review.publish: true in configuration");
   const store = await ReviewStore.open();
+  const runId = store.startPoll();
   try {
     const result = await pollRequested(
       await requestedPullRequests(),
@@ -142,7 +108,14 @@ async function poll(): Promise<void> {
       store,
     );
     console.log(JSON.stringify(result, null, 2));
+    store.finishPoll(runId, { ...result, failed: result.failed.length });
     if (result.failed.length) process.exitCode = 1;
+  } catch (error) {
+    store.failPoll(
+      runId,
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
   } finally {
     store.close();
   }
@@ -151,9 +124,56 @@ async function poll(): Promise<void> {
 async function status(): Promise<void> {
   const store = await ReviewStore.open();
   try {
-    console.log(JSON.stringify(store.recent(), null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          lastPoll: store.latestPoll(),
+          jobs: store.recent(),
+          health: await healthSnapshot(),
+          service: await serviceStatus(),
+        },
+        null,
+        2,
+      ),
+    );
   } finally {
     store.close();
+  }
+}
+
+async function service(args: string[]): Promise<void> {
+  const [action, ...rest] = args;
+  if (rest.length) throw new Error("service accepts exactly one action");
+  switch (action) {
+    case "install":
+      console.log(
+        JSON.stringify(await installService(await loadConfig()), null, 2),
+      );
+      console.log(
+        "Timer installed but disabled. Run `rprr service enable` to start polling.",
+      );
+      break;
+    case "enable":
+      if (!(await loadConfig()).review.publish)
+        throw new Error("Enable publication with `rprr setup --publish` first");
+      await enableService();
+      console.log("RPRR timer enabled");
+      break;
+    case "disable":
+      await disableService();
+      console.log("RPRR timer disabled");
+      break;
+    case "status":
+      console.log(JSON.stringify(await serviceStatus(), null, 2));
+      break;
+    case "uninstall":
+      await uninstallService();
+      console.log("RPRR timer removed");
+      break;
+    default:
+      throw new Error(
+        "service requires install, enable, disable, status, or uninstall",
+      );
   }
 }
 
@@ -161,12 +181,17 @@ export async function runCli(args: string[]): Promise<void> {
   try {
     const [command, ...rest] = args;
     switch (command) {
+      case "setup":
       case "init":
-        await init(rest);
+        await setup(rest);
         break;
       case "doctor":
-        if (rest.length) throw new Error("doctor does not accept arguments");
-        await doctor();
+        if (rest.length > 1 || (rest.length === 1 && rest[0] !== "--deep"))
+          throw new Error("doctor accepts only --deep");
+        await doctor(rest[0] === "--deep");
+        break;
+      case "config":
+        await configCommand(rest);
         break;
       case "review": {
         const publish = rest.includes("--publish");
@@ -188,6 +213,9 @@ export async function runCli(args: string[]): Promise<void> {
       case "status":
         if (rest.length) throw new Error("status does not accept arguments");
         await status();
+        break;
+      case "service":
+        await service(rest);
         break;
       case undefined:
       case "--help":

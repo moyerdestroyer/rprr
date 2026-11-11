@@ -28,6 +28,19 @@ export async function initializeState(path = appPaths().state): Promise<void> {
     }>;
     if (!columns.some((column) => column.name === "attempt_id"))
       db.exec("ALTER TABLE reviews ADD COLUMN attempt_id TEXT");
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS poll_runs (
+        id INTEGER PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        discovered INTEGER,
+        completed INTEGER,
+        skipped INTEGER,
+        failed INTEGER,
+        error TEXT
+      );
+    `);
   } finally {
     db.close();
   }
@@ -43,6 +56,18 @@ export type ReviewJob = {
   started_at: string | null;
   completed_at: string | null;
   published_review_id: number | null;
+  error: string | null;
+};
+
+export type PollRun = {
+  id: number;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "completed" | "failed";
+  discovered: number | null;
+  completed: number | null;
+  skipped: number | null;
+  failed: number | null;
   error: string | null;
 };
 
@@ -153,6 +178,52 @@ export class ReviewStore {
       ({ repository, pr_number }) =>
         `https://github.com/${repository}/pull/${pr_number}`,
     );
+  }
+
+  startPoll(): number {
+    const result = this.db
+      .query("INSERT INTO poll_runs (started_at, status) VALUES (?, 'running')")
+      .run(new Date().toISOString());
+    return Number(result.lastInsertRowid);
+  }
+
+  finishPoll(
+    id: number,
+    result: {
+      discovered: number;
+      completed: number;
+      skipped: number;
+      failed: number;
+    },
+  ): void {
+    this.db
+      .query(`
+      UPDATE poll_runs SET finished_at = ?, status = ?, discovered = ?, completed = ?, skipped = ?, failed = ?
+      WHERE id = ?
+    `)
+      .run(
+        new Date().toISOString(),
+        result.failed ? "failed" : "completed",
+        result.discovered,
+        result.completed,
+        result.skipped,
+        result.failed,
+        id,
+      );
+  }
+
+  failPoll(id: number, error: string): void {
+    this.db
+      .query(
+        "UPDATE poll_runs SET finished_at = ?, status = 'failed', error = ? WHERE id = ?",
+      )
+      .run(new Date().toISOString(), error.slice(0, 4000), id);
+  }
+
+  latestPoll(): PollRun | undefined {
+    return this.db
+      .query("SELECT * FROM poll_runs ORDER BY id DESC LIMIT 1")
+      .get() as PollRun | undefined;
   }
 
   close(): void {

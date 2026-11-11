@@ -6,7 +6,7 @@ Ryan's PR Reviewer is a local-first CLI for reviewing GitHub pull requests throu
 
 ## Current state
 
-`init` creates local configuration and an empty SQLite review database. `doctor` checks dependencies and configuration. `review` checks out a PR at its observed head, runs an ACP review in a read-only sandbox, validates the JSON response, and prints a dry run. `review --publish` submits a non-approving `COMMENT` review after checking the PR head and inline locations again. `poll` processes direct review requests once, and `status` shows recent jobs.
+`setup` creates or updates local configuration and initializes SQLite state. `doctor --deep` probes the ACP agent in a read-only sandbox. `review` checks out a PR at its observed head, runs a review, and prints a dry run. `review --publish` submits a non-approving `COMMENT` review after rechecking the PR head and inline locations. `poll` processes direct review requests once. `status` reports health, the last poll, recent jobs, and the local timer.
 
 ## Requirements
 
@@ -27,26 +27,32 @@ bun link
 rprr --help
 ```
 
-Until the package is published, `bun link` makes the CLI available globally from this checkout. The package has a Bun shebang and a `bin` entry; publishing will allow `bun add -g rprr`.
+Until the package is published, `bun link` makes the CLI available globally from this checkout. The package includes its docs and systemd examples; publishing will allow `bun add -g rprr`. Run `bun run package:check` before release to pack it and start the CLI in an isolated home directory.
 
 ## Configure
 
 ```bash
-rprr init --agent-command <executable> --agent-arg <first-argument>
-rprr doctor
+rprr setup --agent-command <executable> --agent-arg <first-argument>
+rprr doctor --deep
+rprr config show
+rprr config validate
+rprr config set review.maxFindings 20
 rprr review 123
 # or: rprr review https://github.com/OWNER/REPO/pull/123
 rprr review 123 --publish  # explicitly submit a COMMENT review
 rprr poll                  # process direct review requests once
-rprr status                # show the 20 most recent jobs
+rprr status                # health, last poll, service, and recent jobs
+rprr service install       # install local timer, disabled
+rprr service enable        # explicitly start automatic polling
 ```
 
-Without `--agent-command`, `init` prompts for an executable in a terminal. Repeat `--agent-arg` for each argument. `init` requires an authenticated `gh` session and refuses to overwrite an existing config file. Edit the JSON file to change the command, arguments, or review settings later. The agent is launched by `review` or by `poll` when a direct request is found. Set `agent.env` in the config if the sandboxed agent needs credentials from environment variables or a specific `HOME` for its login. For Command Code, `--no-session --no-auto-update acp` works as the agent arguments.
+`setup` can be rerun safely and accepts `--dry-run` to preview. It probes the configured ACP agent before saving; use `--skip-agent-probe` only when you intend to diagnose it later. New configurations start with publication disabled. Enable it explicitly with `rprr setup --publish` before automatic polling. Repeat `--agent-arg` for each argument. Without `--agent-command`, setup reuses an existing command or prompts in a terminal. `init` remains an alias. Use `rprr config show|validate|set|edit` for later changes; updates are written atomically and the prior file is saved as `config.json.bak`. `config show` redacts `agent.env` values. Set `VISUAL` or `EDITOR` to an executable path for `config edit`. Set `agent.env` in the config if the sandboxed agent needs credentials or a specific `HOME`. For Command Code, `--no-session --no-auto-update acp` works as the agent arguments.
 
 Example configuration:
 
 ```json
 {
+  "schemaVersion": 1,
   "agent": { "command": "cmd", "args": ["acp"] },
   "github": { "trigger": "review-request" },
   "review": { "publish": true, "timeoutSeconds": 900, "maxFindings": 20 }
@@ -84,6 +90,7 @@ bun run knip       # unused files, exports, dependencies, and import cycles
 bun run coverage   # Bun tests with coverage report
 bun run audit      # check lockfile for known vulnerabilities (requires network)
 bun run check      # local offline checks: types, Biome, Knip, and tests
+bun run package:check # pack and smoke test an isolated installation
 ```
 
 ## Roadmap

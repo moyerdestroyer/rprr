@@ -10,6 +10,9 @@
     "bin",
     "src",
     "prompts",
+    "docs",
+    "examples",
+    "assets",
     "README.md"
   ],
   "scripts": {
@@ -21,6 +24,7 @@
     "knip": "knip",
     "test": "bun test",
     "coverage": "bun test --coverage",
+    "package:check": "bun scripts/package-check.ts",
     "audit": "bun audit"
   },
   "dependencies": {

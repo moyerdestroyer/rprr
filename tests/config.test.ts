@@ -3,8 +3,13 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Config, createConfig, loadConfig } from "../src/config.ts";
-import { initializeState } from "../src/state.ts";
+import {
+  type Config,
+  createConfig,
+  loadConfig,
+  validateConfig,
+} from "../src/config.ts";
+import { initializeState, ReviewStore } from "../src/state.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -23,6 +28,7 @@ async function temporaryPath(): Promise<string> {
 }
 
 const sampleConfig: Config = {
+  schemaVersion: 1,
   agent: { command: "example-agent", args: ["acp"] },
   github: { trigger: "review-request" },
   review: { publish: true, timeoutSeconds: 900, maxFindings: 20 },
@@ -34,6 +40,18 @@ test("config is validated and never overwritten", async () => {
   expect(await loadConfig(path)).toEqual(sampleConfig);
   await expect(createConfig(sampleConfig, path)).rejects.toThrow();
   expect(JSON.parse(await readFile(path, "utf8"))).toEqual(sampleConfig);
+});
+
+test("legacy config without a schema version loads as version one", async () => {
+  const path = join(await temporaryPath(), "config.json");
+  const { schemaVersion: _version, ...legacy } = sampleConfig;
+  await Bun.write(path, JSON.stringify(legacy));
+  expect(await loadConfig(path)).toEqual(sampleConfig);
+});
+
+test("configuration rejects unknown keys and unsupported schema versions", () => {
+  expect(() => validateConfig({ ...sampleConfig, unexpected: true })).toThrow();
+  expect(() => validateConfig({ ...sampleConfig, schemaVersion: 2 })).toThrow();
 });
 
 test("SQLite state initializes idempotently with review uniqueness", async () => {
@@ -72,5 +90,27 @@ test("existing review databases gain the claim token column", async () => {
     expect(columns.some(({ name }) => name === "attempt_id")).toBe(true);
   } finally {
     migrated.close();
+  }
+});
+
+test("poll runs record success and failure for health reporting", async () => {
+  const store = await ReviewStore.open(
+    join(await temporaryPath(), "reviews.sqlite"),
+  );
+  try {
+    const success = store.startPoll();
+    store.finishPoll(success, {
+      discovered: 2,
+      completed: 1,
+      skipped: 1,
+      failed: 0,
+    });
+    expect(store.latestPoll()?.status).toBe("completed");
+    expect(store.latestPoll()?.completed).toBe(1);
+    const failure = store.startPoll();
+    store.failPoll(failure, "gh unavailable");
+    expect(store.latestPoll()?.error).toBe("gh unavailable");
+  } finally {
+    store.close();
   }
 });

@@ -24,6 +24,7 @@ async function storePath(): Promise<string> {
 }
 
 const config: Config = {
+  schemaVersion: 1,
   agent: { command: "fixture", args: [] },
   github: { trigger: "review-request" },
   review: { publish: true, timeoutSeconds: 30, maxFindings: 20 },
