@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/mascot.png" alt="RPRR mascot: a masked reviewer inspecting a pull request through a magnifying glass" width="220"></p>
+<p align="center"><img src="assets/mascot-v2.png" alt="RPRR mascot: a blonde, masked reviewer inspecting a pull request through a magnifying glass" width="220"></p>
 
 # rprr
 
