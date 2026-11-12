@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
@@ -80,7 +81,7 @@ function sandboxArguments(config: Config["agent"], cwd: string): string[] {
     "--clearenv",
     "--setenv",
     "HOME",
-    "/tmp",
+    homedir(),
     "--setenv",
     "PATH",
     process.env.PATH ?? "/usr/bin:/bin",

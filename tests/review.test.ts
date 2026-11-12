@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { listAgentCommands, runAgent } from "../src/acp.ts";
@@ -97,6 +97,39 @@ test("ACP review denies edits and cannot write to checkout", async () => {
     );
     expect(parseReview(output, 1).summary).toBe("write blocked; reject");
     await expect(access(join(checkout, "should-not-exist"))).rejects.toThrow();
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("the sandbox gives the agent the user home unless overridden", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    const home = await runAgent(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_HOME: "1" },
+      },
+      checkout,
+      "Review this change",
+      10,
+    );
+    expect(parseReview(home, 1).summary).toBe(homedir());
+    const overridden = await runAgent(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_HOME: "1", HOME: "/tmp" },
+      },
+      checkout,
+      "Review this change",
+      10,
+    );
+    expect(parseReview(overridden, 1).summary).toBe("/tmp");
   } finally {
     await rm(checkout, { recursive: true, force: true });
   }

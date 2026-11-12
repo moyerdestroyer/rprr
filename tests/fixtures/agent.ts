@@ -8,6 +8,8 @@ if (process.env.RPRR_TEST_STDERR) console.error(process.env.RPRR_TEST_STDERR);
 
 function echoedReview(received: string): string | undefined {
   const firstLine = received.split("\n")[0] ?? "";
+  if (process.env.RPRR_TEST_HOME === "1")
+    return JSON.stringify({ summary: process.env.HOME ?? "", findings: [] });
   if (process.env.RPRR_TEST_ECHO === "1")
     return JSON.stringify({ summary: firstLine, findings: [] });
   if (process.env.RPRR_TEST_NARRATE !== "1") return undefined;

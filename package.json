@@ -1,6 +1,6 @@
 {
   "name": "rprr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ryan's local-first GitHub PR reviewer",
   "type": "module",
   "bin": {
