@@ -4,6 +4,17 @@ import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 
 let cwd = "";
+if (process.env.RPRR_TEST_STDERR) console.error(process.env.RPRR_TEST_STDERR);
+
+function echoedReview(received: string): string | undefined {
+  const firstLine = received.split("\n")[0] ?? "";
+  if (process.env.RPRR_TEST_ECHO === "1")
+    return JSON.stringify({ summary: firstLine, findings: [] });
+  if (process.env.RPRR_TEST_NARRATE !== "1") return undefined;
+  if (!received.startsWith("Complete the review now"))
+    return "Working on the review.";
+  return JSON.stringify({ summary: firstLine, findings: [] });
+}
 const stream = acp.ndJsonStream(
   Writable.toWeb(process.stdout),
   Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
@@ -15,8 +26,21 @@ acp
     protocolVersion: acp.PROTOCOL_VERSION,
     agentCapabilities: {},
   }))
-  .onRequest(acp.methods.agent.session.new, (ctx) => {
+  .onRequest(acp.methods.agent.session.new, async (ctx) => {
     cwd = ctx.params.cwd;
+    const advertised = process.env.RPRR_TEST_COMMANDS;
+    if (advertised) {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: "test-session",
+        update: {
+          sessionUpdate: "available_commands_update",
+          availableCommands: advertised.split(",").map((name) => ({
+            name,
+            description: `${name} skill`,
+          })),
+        },
+      });
+    }
     return { sessionId: "test-session" };
   })
   .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
@@ -42,6 +66,11 @@ acp
     } catch {
       blocked = true;
     }
+    const block = ctx.params.prompt[0];
+    const received =
+      block && "text" in block && typeof block.text === "string"
+        ? block.text
+        : "";
     await ctx.client.notify(acp.methods.client.session.update, {
       sessionId: ctx.params.sessionId,
       update: {
@@ -49,6 +78,7 @@ acp
         content: {
           type: "text",
           text:
+            echoedReview(received) ??
             process.env.RPRR_TEST_RESPONSE ??
             JSON.stringify({
               summary: `${blocked ? "write blocked" : "write succeeded"}; ${decision.outcome.outcome === "selected" ? decision.outcome.optionId : "cancelled"}`,

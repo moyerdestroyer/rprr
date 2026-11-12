@@ -2,12 +2,14 @@ import { appPaths, loadConfig } from "./config.ts";
 import { configCommand } from "./config-command.ts";
 import { currentLogin, requestedPullRequests } from "./github.ts";
 import {
+  advertisedSkills,
   commandAvailable,
   githubAuthenticated,
   healthSnapshot,
   probeAgent,
 } from "./health.ts";
 import { pollRequested } from "./poll.ts";
+import { promptCommand } from "./prompt.ts";
 import { reviewPullRequest } from "./review.ts";
 import {
   disableService,
@@ -18,6 +20,7 @@ import {
 } from "./service.ts";
 import { setup } from "./setup.ts";
 import { ReviewStore } from "./state.ts";
+import { version } from "./version.ts";
 
 const help = `rprr — Ryan's PR Reviewer
 
@@ -26,14 +29,20 @@ Usage:
   rprr init [setup options]
   rprr doctor [--deep]
   rprr config show|validate|set|edit
+  rprr prompt show|edit|reset
+  rprr skills
   rprr review <PR-number-or-URL> [--publish]
   rprr poll
   rprr status
   rprr service install|enable|disable|status|uninstall
   rprr --help
+  rprr --version
 
 Review prints a dry run by default. --publish submits a COMMENT review.
-Poll reviews direct requests once and exits; run it from a local scheduler.`;
+Poll reviews direct requests once and exits; run it from a local scheduler.
+In a terminal, setup asks for the agent and whether to publish or schedule.
+prompt edit replaces the built-in review instructions.
+skills lists slash commands advertised by the configured agent.`;
 
 async function doctor(deep: boolean): Promise<void> {
   const checks: Array<[string, boolean, string, string]> = [
@@ -177,6 +186,39 @@ async function service(args: string[]): Promise<void> {
   }
 }
 
+function showVersion(rest: string[]): void {
+  if (rest.length) throw new Error("--version does not accept arguments");
+  console.log(version);
+}
+
+async function skills(rest: string[]): Promise<void> {
+  if (rest.length) throw new Error("skills does not accept arguments");
+  const commands = await advertisedSkills(await loadConfig());
+  if (!commands.length) {
+    console.log("The agent advertised no slash commands.");
+    return;
+  }
+  for (const command of commands)
+    console.log(
+      command.description
+        ? `/${command.name}  ${command.description}`
+        : `/${command.name}`,
+    );
+}
+
+async function review(rest: string[]): Promise<void> {
+  const publish = rest.includes("--publish");
+  const selectors = rest.filter((value) => value !== "--publish");
+  const selector = selectors[0];
+  if (!selector || selectors.length !== 1 || rest.length > 2)
+    throw new Error(
+      "review requires one PR number or URL and optional --publish",
+    );
+  const config = await loadConfig();
+  const result = await reviewPullRequest(selector, config, publish);
+  console.log(JSON.stringify({ ...result, dryRun: !publish }, null, 2));
+}
+
 export async function runCli(args: string[]): Promise<void> {
   try {
     const [command, ...rest] = args;
@@ -193,19 +235,15 @@ export async function runCli(args: string[]): Promise<void> {
       case "config":
         await configCommand(rest);
         break;
-      case "review": {
-        const publish = rest.includes("--publish");
-        const selectors = rest.filter((value) => value !== "--publish");
-        const selector = selectors[0];
-        if (!selector || selectors.length !== 1 || rest.length > 2)
-          throw new Error(
-            "review requires one PR number or URL and optional --publish",
-          );
-        const config = await loadConfig();
-        const result = await reviewPullRequest(selector, config, publish);
-        console.log(JSON.stringify({ ...result, dryRun: !publish }, null, 2));
+      case "prompt":
+        await promptCommand(rest);
         break;
-      }
+      case "skills":
+        await skills(rest);
+        break;
+      case "review":
+        await review(rest);
+        break;
       case "poll":
         if (rest.length) throw new Error("poll does not accept arguments");
         await poll();
@@ -221,6 +259,10 @@ export async function runCli(args: string[]): Promise<void> {
       case "--help":
       case "-h":
         console.log(help);
+        break;
+      case "--version":
+      case "-V":
+        showVersion(rest);
         break;
       default:
         throw new Error(`Unknown command: ${command}\n\n${help}`);

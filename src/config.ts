@@ -23,6 +23,8 @@ const configSchema = z.strictObject({
     publish: z.boolean(),
     timeoutSeconds: z.number().int().positive(),
     maxFindings: z.number().int().positive(),
+    promptFile: z.string().min(1).optional(),
+    skill: z.string().min(1).optional(),
   }),
 });
 

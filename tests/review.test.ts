@@ -3,7 +3,7 @@ import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runAgent } from "../src/acp.ts";
+import { listAgentCommands, runAgent } from "../src/acp.ts";
 import {
   parseReview,
   type Review,
@@ -97,6 +97,156 @@ test("ACP review denies edits and cannot write to checkout", async () => {
     );
     expect(parseReview(output, 1).summary).toBe("write blocked; reject");
     await expect(access(join(checkout, "should-not-exist"))).rejects.toThrow();
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a skill is still sent when the agent advertises no commands", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    const output = await runAgent(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_ECHO: "1" },
+      },
+      checkout,
+      "Review this change",
+      10,
+      "security-review",
+    );
+    expect(parseReview(output, 1).summary).toBe("/security-review");
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a configured skill is sent as an advertised slash command", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    const output = await runAgent(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_ECHO: "1", RPRR_TEST_COMMANDS: "security-review" },
+      },
+      checkout,
+      "Review this change",
+      10,
+      "security-review",
+    );
+    expect(parseReview(output, 1).summary).toBe("/security-review");
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a configured skill must be advertised by the agent", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    await expect(
+      runAgent(
+        {
+          command: process.execPath,
+          args: [fixture],
+          env: { RPRR_TEST_COMMANDS: "other" },
+        },
+        checkout,
+        "Review this change",
+        10,
+        "security-review",
+      ),
+    ).rejects.toThrow(/\/security-review/);
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a skill mismatch stays visible when the agent logs to stderr", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    await expect(
+      runAgent(
+        {
+          command: process.execPath,
+          args: [fixture],
+          env: { RPRR_TEST_COMMANDS: "other", RPRR_TEST_STDERR: "agent log" },
+        },
+        checkout,
+        "Review this change",
+        10,
+        "security-review",
+      ),
+    ).rejects.toThrow(/\/security-review[\s\S]*agent log/);
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("a format follow-up does not invoke the skill again", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    const output = await runAgent(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_NARRATE: "1", RPRR_TEST_COMMANDS: "security-review" },
+      },
+      checkout,
+      "Review this change",
+      10,
+      "security-review",
+    );
+    expect(parseReview(output, 1).summary).toBe(
+      'Complete the review now. Return only a JSON object with "summary" and "findings". Do not narrate progress.',
+    );
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("skills lists the commands an agent advertises", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    const advertised = await listAgentCommands(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_COMMANDS: "security-review,tests" },
+      },
+      checkout,
+      10,
+    );
+    expect(advertised).toEqual([
+      { name: "security-review", description: "security-review skill" },
+      { name: "tests", description: "tests skill" },
+    ]);
+    expect(
+      await listAgentCommands(
+        { command: process.execPath, args: [fixture] },
+        checkout,
+        10,
+      ),
+    ).toEqual([]);
   } finally {
     await rm(checkout, { recursive: true, force: true });
   }

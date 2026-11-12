@@ -49,6 +49,7 @@ try {
     "package/docs/scheduling.md",
     "package/examples/systemd/rprr.service",
     "package/examples/systemd/rprr.timer",
+    "package/prompts/review.md",
     "package/assets/mascot-v3.png",
     "package/assets/mascot-banner-v2.png",
   ]) {
@@ -78,6 +79,16 @@ try {
   });
   if (!installedHelp.includes("rprr service install"))
     throw new Error("Globally installed CLI did not start");
+  await run(
+    [
+      "bun",
+      "scripts/build-release.ts",
+      "--host",
+      "--out",
+      join(temporary, "dist"),
+    ],
+    root,
+  );
   console.log(
     `Packed ${entries.length} files and started the CLI from an isolated global installation`,
   );

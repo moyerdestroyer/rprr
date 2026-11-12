@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { renderUnits } from "../src/service.ts";
+import { pollLaunch, renderUnits } from "../src/service.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const temporary: string[] = [];
@@ -145,13 +145,44 @@ test("deep doctor validates an ACP agent inside the read-only sandbox", async ()
 
 test("generated unit quotes executable paths and preserves custom agent path", () => {
   const units = renderUnits(
-    "/opt/bun/bin/bun",
+    ["/opt/bun/bin/bun", "/opt/rprr/bin/rprr.ts", "poll"],
     "/opt/agent/bin/cmd",
     "/usr/bin/gh",
   );
-  expect(units.service).toContain('ExecStart="/opt/bun/bin/bun"');
+  expect(units.service).toContain(
+    'ExecStart="/opt/bun/bin/bun" "/opt/rprr/bin/rprr.ts" "poll"',
+  );
   expect(units.service).toContain("/opt/agent/bin");
   expect(units.timer).toContain("Persistent=true");
+  const standalone = renderUnits(
+    ["/home/user/.local/bin/rprr", "poll"],
+    "/opt/agent/bin/cmd",
+    "/usr/bin/gh",
+  );
+  expect(standalone.service).toContain(
+    'ExecStart="/home/user/.local/bin/rprr" "poll"',
+  );
+  expect(standalone.service).toContain("/home/user/.local/bin");
+  expect(
+    pollLaunch(true, undefined, "/home/user/.local/bin/rprr", "/ignored"),
+  ).toEqual(["/home/user/.local/bin/rprr", "poll"]);
+  expect(
+    pollLaunch(
+      false,
+      "/opt/bun/bin/bun",
+      "/opt/bun/bin/bun",
+      "/src/bin/rprr.ts",
+    ),
+  ).toEqual(["/opt/bun/bin/bun", "/src/bin/rprr.ts", "poll"]);
+  expect(() => pollLaunch(false, undefined, "/x", "/y")).toThrow(/bun/);
+});
+
+test("setup without a terminal requires an agent command", async () => {
+  const { config, cli } = await fixture();
+  const result = await cli("setup");
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("--agent-command");
+  await expect(readFile(config)).rejects.toThrow();
 });
 
 test("setup rejects broken authentication and a missing agent without writing config", async () => {

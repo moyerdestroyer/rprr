@@ -6,6 +6,7 @@ import {
   saveConfig,
   validateConfig,
 } from "./config.ts";
+import { readPromptFile, reviewSkill } from "./prompt.ts";
 
 function redacted(config: Config): Config {
   if (!config.agent.env) return config;
@@ -32,11 +33,33 @@ function valueFor(key: string, raw: string): unknown {
     return Number(raw);
   }
   if (key === "agent.args") return JSON.parse(raw);
-  if (key === "agent.command") return raw;
+  if (key === "agent.command" || key === "review.promptFile") return raw;
+  if (key === "review.skill") return reviewSkill(raw);
   throw new Error(`Unsupported config key: ${key}`);
 }
 
-function changed(config: Config, key: string, raw: string): Config {
+function withoutReviewField(
+  config: Config,
+  field: "promptFile" | "skill",
+): Config {
+  const review = { ...config.review };
+  delete review[field];
+  return validateConfig({ ...config, review });
+}
+
+async function changed(
+  config: Config,
+  key: string,
+  raw: string,
+): Promise<Config> {
+  if (key === "review.promptFile") {
+    if (raw === "") return withoutReviewField(config, "promptFile");
+    await readPromptFile(raw);
+  }
+  if (key === "review.skill") {
+    if (raw === "") return withoutReviewField(config, "skill");
+    reviewSkill(raw);
+  }
   const value = valueFor(key, raw);
   const [section, field] = key.split(".");
   if (section === "agent")
@@ -96,7 +119,7 @@ export async function configCommand(args: string[]): Promise<void> {
       if (rest.length !== 2 || !rest[0] || rest[1] === undefined)
         throw new Error("config set requires a key and value");
       console.log(
-        `Configuration ${await saveConfig(changed(config, rest[0], rest[1]), path)}: ${path}`,
+        `Configuration ${await saveConfig(await changed(config, rest[0], rest[1]), path)}: ${path}`,
       );
       break;
     case "edit":

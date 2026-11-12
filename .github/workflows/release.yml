@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish binaries
+    # Ubuntu 24.04 restricts unprivileged user namespaces needed by the sandbox tests.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+      - name: Verify sandbox namespace support
+        run: bwrap --ro-bind / / --tmpfs /tmp --dev-bind /dev /dev --proc /proc true
+      - name: Install locked dependencies
+        run: bun ci
+      - name: Run local quality gate
+        run: bun run check
+      - name: Check the tag matches package.json
+        run: |
+          version="$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+      - name: Build release binaries
+        run: bun scripts/build-release.ts
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Install or update with the command in the README." \
+            dist/rprr-linux-x64 \
+            dist/rprr-linux-arm64 \
+            dist/SHA256SUMS \
+            scripts/install.sh

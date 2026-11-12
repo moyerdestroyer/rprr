@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgent } from "./acp.ts";
+import { type AdvertisedCommand, listAgentCommands, runAgent } from "./acp.ts";
 import { appPaths, type Config, loadConfig } from "./config.ts";
 import { parseReview } from "./findings.ts";
 
@@ -29,6 +29,21 @@ export async function probeAgent(config: Config): Promise<void> {
       Math.min(config.review.timeoutSeconds, 45),
     );
     parseReview(response, config.review.maxFindings);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+export async function advertisedSkills(
+  config: Config,
+): Promise<AdvertisedCommand[]> {
+  const directory = await mkdtemp(join(tmpdir(), "rprr-skills-"));
+  try {
+    return await listAgentCommands(
+      config.agent,
+      directory,
+      Math.min(config.review.timeoutSeconds, 45),
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
