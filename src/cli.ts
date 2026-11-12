@@ -43,7 +43,7 @@ Usage:
 
 Review creates a pending GitHub review by default. --publish submits a COMMENT review.
 Poll drafts reviews for direct requests once and exits; run it from a local scheduler.
-In a terminal, setup asks for the agent and whether to schedule.
+In a terminal, setup detects ACP agents and offers a custom command, then asks whether to schedule.
 prompt edit replaces the built-in review instructions.
 skills lists slash commands advertised by the configured agent.`;
 

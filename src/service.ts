@@ -123,7 +123,9 @@ export async function installService(
 ): Promise<ReturnType<typeof servicePaths>> {
   if (process.platform !== "linux")
     throw new Error("User timer setup requires Linux");
-  const standalone = Bun.isStandaloneExecutable;
+  // Bun 1.3 compiled binaries expose a virtual main path but not this property.
+  const standalone =
+    Bun.isStandaloneExecutable || Bun.main.startsWith("/$bunfs/");
   const bun = Bun.which("bun") ?? undefined;
   const agent = resolveAgentCommand(config.agent.command);
   const gh = Bun.which("gh");

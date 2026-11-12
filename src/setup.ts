@@ -1,6 +1,8 @@
 import { mkdir } from "node:fs/promises";
+import { basename } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { configuredAgentCommand } from "./agent-command.ts";
+import { type DetectedAgent, discoverAgents } from "./agent-discovery.ts";
 import { appPaths, type Config, loadConfig, saveConfig } from "./config.ts";
 import { commandAvailable, githubAuthenticated, probeAgent } from "./health.ts";
 import { enableService, installService } from "./service.ts";
@@ -166,9 +168,17 @@ async function customAgent(
 
 export async function interviewSetup(
   ask: (prompt: string) => Promise<string>,
-  available: { timer: boolean },
+  available: {
+    timer: boolean;
+    agents?: readonly DetectedAgent[];
+    current?: { command: string; args: string[] };
+  },
 ): Promise<SetupChoices> {
-  const agent = await customAgent(ask);
+  const agent = await selectAgent(
+    ask,
+    available.agents ?? [],
+    available.current,
+  );
   const enableTimer =
     available.timer &&
     decideYesNo(
@@ -178,18 +188,67 @@ export async function interviewSetup(
   return { ...agent, enableTimer };
 }
 
+function sameAgent(
+  left: { command: string; args: string[] },
+  right: { command: string; args: string[] },
+): boolean {
+  return (
+    left.command === right.command &&
+    left.args.length === right.args.length &&
+    left.args.every((arg, index) => arg === right.args[index])
+  );
+}
+
+async function selectAgent(
+  ask: (prompt: string) => Promise<string>,
+  detected: readonly DetectedAgent[],
+  current?: { command: string; args: string[] },
+): Promise<{ command: string; args: string[] }> {
+  const choices = [
+    ...(current
+      ? [{ ...current, name: `Current (${basename(current.command)})` }]
+      : []),
+    ...detected.filter((agent) => !current || !sameAgent(agent, current)),
+  ];
+  if (choices.length === 0) return customAgent(ask);
+  const lines = choices.map((agent, index) =>
+    `  ${index + 1}) ${agent.name} — ${basename(agent.command)} ${agent.args.join(" ")}`.trimEnd(),
+  );
+  const customIndex = choices.length + 1;
+  const answer = (
+    await ask(
+      `Reviewer agents:\n${lines.join("\n")}\n  ${customIndex}) Custom command or path\nSelect reviewer agent [1]: `,
+    )
+  ).trim();
+  const choice = answer === "" ? 1 : Number(answer);
+  if (!Number.isInteger(choice) || choice < 1 || choice > customIndex)
+    throw new Error("Choose a listed reviewer agent number");
+  if (choice === customIndex) return customAgent(ask);
+  const selected = choices[choice - 1];
+  if (!selected) throw new Error("Choose a listed reviewer agent number");
+  return { command: selected.command, args: selected.args };
+}
+
 function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
-async function promptSetup(): Promise<ResolvedSetup> {
+async function promptSetup(
+  current: Config | undefined,
+  detect: boolean,
+): Promise<ResolvedSetup> {
+  if (detect) console.log("Detecting installed ACP agents...");
+  const agents = detect ? await discoverAgents() : [];
   const prompt = createInterface({
     input: process.stdin,
     output: process.stdout,
   });
   try {
     return await interviewSetup((question) => prompt.question(question), {
+      agents,
+      ...(current ? { current: current.agent } : {}),
       timer:
+        !current &&
         process.platform === "linux" &&
         commandAvailable("systemctl") &&
         commandAvailable("systemd-analyze"),
@@ -203,14 +262,15 @@ async function resolveSetup(
   options: Options,
   current?: Config,
 ): Promise<ResolvedSetup> {
-  if (options.command || current)
+  if (options.command)
     return {
-      command: options.command ?? current?.agent.command ?? "",
+      command: options.command,
       enableTimer: false,
     };
-  if (!isInteractive())
-    throw new Error("Pass --agent-command when running without a terminal");
-  return promptSetup();
+  if (isInteractive())
+    return promptSetup(current, !options.skipProbe && !options.dryRun);
+  if (current) return { command: current.agent.command, enableTimer: false };
+  throw new Error("Pass --agent-command when running without a terminal");
 }
 
 async function startTimer(config: Config): Promise<void> {
@@ -281,6 +341,12 @@ export async function setup(args: string[]): Promise<void> {
   console.log(`State ready: ${paths.state}`);
   if (resolved.enableTimer) {
     await startTimer(config);
+    return;
+  }
+  if (current) {
+    console.log(
+      "Existing timer setting kept. Run `rprr service status` to check it.",
+    );
     return;
   }
   console.log(

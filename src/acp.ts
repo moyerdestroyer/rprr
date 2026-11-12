@@ -215,3 +215,22 @@ export async function listAgentCommands(
   });
   return turn.commands;
 }
+
+export async function probeAgentHandshake(
+  config: Config["agent"],
+  cwd: string,
+  timeoutSeconds: number,
+): Promise<void> {
+  const turn: AgentTurn = { response: "", commands: [] };
+  await withAgent(config, cwd, timeoutSeconds, async (child) => {
+    const { stream, app } = clientSession(child, turn);
+    await app.connectWith(stream, async (ctx) => {
+      const init = await ctx.request(acp.methods.agent.initialize, {
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientCapabilities: {},
+      });
+      if (init.protocolVersion !== acp.PROTOCOL_VERSION)
+        throw new Error(`Unsupported ACP version: ${init.protocolVersion}`);
+    });
+  });
+}

@@ -41,6 +41,48 @@ test("interview can choose a custom agent and enable the timer", async () => {
   expect(prompts).toHaveLength(3);
 });
 
+test("interview offers detected agents and keeps a custom option", async () => {
+  const agents = [
+    { name: "Command Code", command: "/agents/cmd", args: ["acp"] },
+    { name: "Gemini CLI", command: "/agents/gemini", args: ["--acp"] },
+  ];
+  const detected = scripted(["2", "y"]);
+  expect(await interviewSetup(detected.ask, { timer: true, agents })).toEqual({
+    command: "/agents/gemini",
+    args: ["--acp"],
+    enableTimer: true,
+  });
+  expect(detected.prompts[0]).toContain("Command Code");
+  expect(detected.prompts[0]).toContain("Gemini CLI");
+  expect(detected.prompts[0]).toContain("3) Custom command or path");
+
+  const custom = scripted(["3", "/opt/my agent", "--stdio", ""]);
+  expect(await interviewSetup(custom.ask, { timer: true, agents })).toEqual({
+    command: "/opt/my agent",
+    args: ["--stdio"],
+    enableTimer: false,
+  });
+  expect(custom.prompts[1]).toBe("ACP agent executable or path: ");
+});
+
+test("interview defaults to the current agent and rejects invalid choices", async () => {
+  const current = { command: "/agents/cmd", args: ["acp"] };
+  const same = { name: "Command Code", ...current };
+  const choice = scripted(["", "n"]);
+  expect(
+    await interviewSetup(choice.ask, {
+      timer: true,
+      agents: [same],
+      current,
+    }),
+  ).toEqual({ ...current, enableTimer: false });
+  expect(choice.prompts[0]?.match(/cmd acp/g)).toHaveLength(1);
+  const invalid = scripted(["9"]);
+  await expect(
+    interviewSetup(invalid.ask, { timer: false, agents: [same] }),
+  ).rejects.toThrow(/listed reviewer agent/);
+});
+
 test("interview skips the timer when systemd is unavailable", async () => {
   const withoutTimer = scripted(["custom", ""]);
   expect(

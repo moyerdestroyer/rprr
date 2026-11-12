@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -89,6 +96,39 @@ try {
     ],
     root,
   );
+  const hostBinary = join(
+    temporary,
+    "dist",
+    process.arch === "arm64" ? "rprr-linux-arm64" : "rprr-linux-x64",
+  );
+  const serviceTools = join(temporary, "service-tools");
+  await mkdir(serviceTools);
+  for (const name of ["gh", "systemctl", "systemd-analyze"]) {
+    const executable = join(serviceTools, name);
+    await writeFile(executable, "#!/bin/sh\nexit 0\n");
+    await chmod(executable, 0o755);
+  }
+  const configDir = join(env.XDG_CONFIG_HOME, "rprr");
+  await mkdir(configDir, { recursive: true });
+  await writeFile(
+    join(configDir, "config.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      agent: { command: "/bin/true", args: [] },
+      github: { trigger: "review-request" },
+      review: { timeoutSeconds: 900, maxFindings: 20 },
+    }),
+  );
+  await run([hostBinary, "service", "install"], temporary, {
+    ...env,
+    PATH: `${serviceTools}:${process.env.PATH ?? ""}`,
+  });
+  const unit = await readFile(
+    join(env.XDG_CONFIG_HOME, "systemd", "user", "rprr.service"),
+    "utf8",
+  );
+  if (!unit.includes(`ExecStart=${JSON.stringify(hostBinary)} "poll"`))
+    throw new Error("Compiled CLI service does not run its own binary");
   console.log(
     `Packed ${entries.length} files and started the CLI from an isolated global installation`,
   );
