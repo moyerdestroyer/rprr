@@ -1,5 +1,4 @@
 {
   "includeEntryExports": true,
-  "ignoreBinaries": ["bwrap"],
   "rules": { "cycles": "error" }
 }

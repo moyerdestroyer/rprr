@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AdvertisedCommand, listAgentCommands, runAgent } from "./acp.ts";
+import { resolveAgentCommand } from "./agent-command.ts";
 import { appPaths, type Config, loadConfig } from "./config.ts";
 import { parseReview } from "./findings.ts";
 
@@ -58,9 +59,9 @@ export async function healthSnapshot() {
   }
   return {
     githubAuthenticated: githubAuthenticated(),
-    sandboxAvailable: process.platform === "linux" && commandAvailable("bwrap"),
     configurationValid: config !== undefined,
-    agentAvailable: config ? commandAvailable(config.agent.command) : false,
-    publishingEnabled: config?.review.publish ?? false,
+    agentAvailable: config
+      ? resolveAgentCommand(config.agent.command) !== undefined
+      : false,
   };
 }

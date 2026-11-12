@@ -4,7 +4,9 @@ import {
   isReviewRequested,
   loadPullRequest,
   type PullRequest,
+  type RemoteReview,
 } from "./github.ts";
+import { notifyDraft } from "./notify.ts";
 import { reviewPullRequest } from "./review.ts";
 import type { ReviewStore } from "./state.ts";
 
@@ -13,6 +15,7 @@ type Services = {
   requested: typeof isReviewRequested;
   existing: typeof existingReview;
   review: typeof reviewPullRequest;
+  notify?: (pr: PullRequest, review: RemoteReview) => Promise<void>;
 };
 
 const services: Services = {
@@ -20,6 +23,7 @@ const services: Services = {
   requested: isReviewRequested,
   existing: existingReview,
   review: reviewPullRequest,
+  notify: notifyDraft,
 };
 
 export type PollResult = {
@@ -36,7 +40,7 @@ async function processRequest(
   store: ReviewStore,
   deps: Services,
 ): Promise<"completed" | "skipped"> {
-  const previous = await deps.existing(pr);
+  const previous = await deps.existing(pr, login);
   if (!previous && (pr.state !== "OPEN" || !(await deps.requested(pr, login))))
     return "skipped";
   const claim = store.claim(
@@ -48,17 +52,24 @@ async function processRequest(
   );
   if (!claim) return "skipped";
   try {
-    const published =
+    const posted =
       previous ??
       (
-        await deps.review(pr.url, config, true, async (observed) => {
+        await deps.review(pr.url, config, "draft", async (observed) => {
           if (!store.isActive(claim)) throw new Error("Review claim was lost");
           if (!(await deps.requested(observed, login)))
             throw new Error("Review request was withdrawn");
         })
-      ).publishedReview;
-    if (!published) throw new Error("Review did not publish");
-    store.complete(claim, published.id);
+      ).postedReview;
+    if (!posted) throw new Error("Review was not created");
+    store.complete(claim, posted.id, posted.state);
+    if (posted.state === "PENDING") {
+      try {
+        await deps.notify?.(pr, posted);
+      } catch {
+        // Notification failure cannot undo a GitHub draft.
+      }
+    }
     return "completed";
   } catch (error) {
     store.fail(claim, error instanceof Error ? error.message : String(error));
@@ -73,8 +84,6 @@ export async function pollRequested(
   store: ReviewStore,
   deps: Services = services,
 ): Promise<PollResult> {
-  if (!config.review.publish)
-    throw new Error("Polling requires review.publish: true in configuration");
   const candidates = [
     ...new Set([...urls, ...store.recoverable(config.review.timeoutSeconds)]),
   ];

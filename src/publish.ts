@@ -5,19 +5,24 @@ import {
   existingReview,
   loadPullRequest,
   type PullRequest,
+  type RemoteReview,
   reviewMarker,
 } from "./github.ts";
 
 const responseSchema = z.object({
   id: z.number().int().positive(),
-  state: z.literal("COMMENTED"),
+  state: z.enum(["PENDING", "COMMENTED"]),
   html_url: z.string().url(),
 });
 
-export function reviewPayload(pr: PullRequest, review: Review) {
+export function reviewPayload(
+  pr: PullRequest,
+  review: Review,
+  publish = false,
+) {
   return {
     commit_id: pr.headRefOid,
-    event: "COMMENT" as const,
+    ...(publish ? { event: "COMMENT" as const } : {}),
     body: `${reviewMarker}\n\n${review.summary}`,
     comments: review.findings.map((finding) => ({
       path: finding.file,
@@ -44,17 +49,7 @@ export function verifyUnchanged(
     );
 }
 
-export async function publishReview(
-  pr: PullRequest,
-  review: Review,
-  diff: string,
-): Promise<{ id: number; url: string }> {
-  validateInlineLocations(review, diff);
-  const current = await loadPullRequest(pr.url);
-  verifyUnchanged(pr, current);
-  const previous = await existingReview(pr);
-  if (previous) return previous;
-  const endpoint = `repos/${pr.repository}/pulls/${pr.number}/reviews`;
+async function post(endpoint: string, payload: unknown): Promise<RemoteReview> {
   const child = Bun.spawn(
     ["gh", "api", endpoint, "--method", "POST", "--input", "-"],
     {
@@ -63,7 +58,7 @@ export async function publishReview(
       stderr: "pipe",
     },
   );
-  child.stdin.write(JSON.stringify(reviewPayload(pr, review)));
+  child.stdin.write(JSON.stringify(payload));
   child.stdin.end();
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(child.stdout).text(),
@@ -75,5 +70,64 @@ export async function publishReview(
       `GitHub rejected review: ${stderr.trim() || stdout.trim()}`,
     );
   const result = responseSchema.parse(JSON.parse(stdout));
-  return { id: result.id, url: result.html_url };
+  return { id: result.id, url: result.html_url, state: result.state };
+}
+
+export async function postReview(
+  pr: PullRequest,
+  review: Review,
+  diff: string,
+  publish = false,
+): Promise<RemoteReview> {
+  validateInlineLocations(review, diff);
+  const current = await loadPullRequest(pr.url);
+  verifyUnchanged(pr, current);
+  const previous = await existingReview(pr);
+  if (previous) {
+    if (publish && previous.state === "PENDING") {
+      const submitted = await post(
+        `repos/${pr.repository}/pulls/${pr.number}/reviews/${previous.id}/events`,
+        { event: "COMMENT" },
+      );
+      if (submitted.state !== "COMMENTED")
+        throw new Error("GitHub did not submit the pending review");
+      return submitted;
+    }
+    return previous;
+  }
+  const endpoint = `repos/${pr.repository}/pulls/${pr.number}/reviews`;
+  const result = await post(endpoint, reviewPayload(pr, review, publish));
+  const expected = publish ? "COMMENTED" : "PENDING";
+  if (result.state !== expected)
+    throw new Error(`GitHub returned ${result.state} instead of ${expected}`);
+  return result;
+}
+
+export async function submitExistingDraft(selector: string): Promise<
+  | {
+      url: string;
+      repository: string;
+      number: number;
+      head: string;
+      postedReview: RemoteReview;
+    }
+  | undefined
+> {
+  const pr = await loadPullRequest(selector);
+  const existing = await existingReview(pr);
+  if (existing?.state !== "PENDING") return undefined;
+  verifyUnchanged(pr, await loadPullRequest(pr.url));
+  const submitted = await post(
+    `repos/${pr.repository}/pulls/${pr.number}/reviews/${existing.id}/events`,
+    { event: "COMMENT" },
+  );
+  if (submitted.state !== "COMMENTED")
+    throw new Error("GitHub did not submit the pending review");
+  return {
+    url: pr.url,
+    repository: pr.repository,
+    number: pr.number,
+    head: pr.headRefOid,
+    postedReview: submitted,
+  };
 }

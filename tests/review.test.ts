@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { access, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +16,7 @@ import {
   type Review,
   validateFindingLocations,
 } from "../src/findings.ts";
-import { loadPullRequest } from "../src/github.ts";
+import { loadPullRequest, restoreCheckout } from "../src/github.ts";
 
 test("review response validates finding paths and limit", () => {
   const valid: Review = {
@@ -83,26 +90,77 @@ test("finding locations must resolve to text lines inside the checkout", async (
   }
 });
 
-test("ACP review denies edits and cannot write to checkout", async () => {
+test("ACP review can write in its disposable checkout and agent state", async () => {
   const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const state = await mkdtemp(join(tmpdir(), "rprr-agent-state-test-"));
   const fixture = fileURLToPath(
     new URL("./fixtures/agent.ts", import.meta.url),
   );
   try {
     const output = await runAgent(
-      { command: process.execPath, args: [fixture] },
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_STATE_FILE: join(state, "state.txt") },
+      },
       checkout,
       "Review this change",
       10,
     );
-    expect(parseReview(output, 1).summary).toBe("write blocked; reject");
-    await expect(access(join(checkout, "should-not-exist"))).rejects.toThrow();
+    expect(parseReview(output, 1).summary).toBe("write succeeded; reject");
+    expect(await readFile(join(checkout, "should-not-exist"), "utf8")).toBe(
+      "bad",
+    );
+    expect(await readFile(join(state, "state.txt"), "utf8")).toBe(
+      "agent state",
+    );
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("checkout restoration discards agent edits before finding validation", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-restore-test-"));
+  function git(...args: string[]): string {
+    const result = Bun.spawnSync(["git", ...args], { cwd: checkout });
+    if (result.exitCode !== 0)
+      throw new Error(result.stderr.toString() || "git failed");
+    return result.stdout.toString().trim();
+  }
+  try {
+    git("init", "--quiet");
+    await writeFile(join(checkout, "reviewed.txt"), "original\n");
+    git("add", "reviewed.txt");
+    git(
+      "-c",
+      "user.name=RPRR Test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "-m",
+      "base",
+    );
+    const head = git("rev-parse", "HEAD");
+    await writeFile(join(checkout, "reviewed.txt"), "agent change\n");
+    await writeFile(join(checkout, "new.txt"), "agent file\n");
+    await restoreCheckout(checkout, head);
+    expect(await readFile(join(checkout, "reviewed.txt"), "utf8")).toBe(
+      "original\n",
+    );
+    await expect(access(join(checkout, "new.txt"))).rejects.toThrow();
+    await expect(restoreCheckout(checkout, "invalid")).rejects.toThrow(
+      /Invalid PR head/,
+    );
   } finally {
     await rm(checkout, { recursive: true, force: true });
   }
 });
 
-test("the sandbox gives the agent the user home unless overridden", async () => {
+test("the agent gets the user home unless overridden", async () => {
   const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
   const fixture = fileURLToPath(
     new URL("./fixtures/agent.ts", import.meta.url),
@@ -131,6 +189,26 @@ test("the sandbox gives the agent the user home unless overridden", async () => 
     );
     expect(parseReview(overridden, 1).summary).toBe("/tmp");
   } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
+test("the agent inherits the launch environment", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  process.env.RPRR_TEST_INHERITED = "environment visible";
+  try {
+    const output = await runAgent(
+      { command: process.execPath, args: [fixture] },
+      checkout,
+      "Review this change",
+      10,
+    );
+    expect(parseReview(output, 1).summary).toBe("environment visible");
+  } finally {
+    delete process.env.RPRR_TEST_INHERITED;
     await rm(checkout, { recursive: true, force: true });
   }
 });

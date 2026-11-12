@@ -84,6 +84,8 @@ const host = join(out, hostAsset());
 const embedded = await readFile(host);
 if (!embedded.includes(Buffer.from("Return only a JSON object")))
   throw new Error("Review prompt was not embedded in the release binary");
+if (!embedded.includes(Buffer.from("mascot-v3.png")))
+  throw new Error("Notification icon was not embedded in the release binary");
 const started = await run([host, "--version"], out);
 if (started !== version)
   throw new Error(`Binary version ${started} does not match ${version}`);

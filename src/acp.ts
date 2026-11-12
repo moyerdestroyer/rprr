@@ -1,8 +1,7 @@
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
-import { dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { configuredAgentCommand } from "./agent-command.ts";
 import type { Config } from "./config.ts";
 import { parseReview } from "./findings.ts";
 import { reviewSkill } from "./prompt.ts";
@@ -52,47 +51,14 @@ function permission(
     : { outcome: { outcome: "cancelled" } };
 }
 
-function sandboxArguments(config: Config["agent"], cwd: string): string[] {
-  if (process.platform !== "linux" || !Bun.which("bwrap"))
-    throw new Error("Read-only review requires Linux and bubblewrap (bwrap)");
-  const executable = Bun.which(config.command);
-  if (!executable)
-    throw new Error(`Agent executable not found: ${config.command}`);
-  const args: string[] = [
-    "--die-with-parent",
-    "--unshare-pid",
-    "--ro-bind",
-    "/",
-    "/",
-    "--tmpfs",
-    "/tmp",
-    "--dir",
-    dirname(cwd),
-    "--ro-bind",
-    cwd,
-    cwd,
-    "--dev-bind",
-    "/dev",
-    "/dev",
-    "--proc",
-    "/proc",
-    "--chdir",
-    cwd,
-    "--clearenv",
-    "--setenv",
-    "HOME",
-    homedir(),
-    "--setenv",
-    "PATH",
-    process.env.PATH ?? "/usr/bin:/bin",
-  ];
+function agentEnvironment(config: Config["agent"]): NodeJS.ProcessEnv {
+  const env = { ...process.env };
   for (const [key, value] of Object.entries(config.env ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
       throw new Error(`Invalid agent environment variable: ${key}`);
-    args.push("--setenv", key, value);
+    env[key] = value;
   }
-  args.push("--", executable, ...config.args);
-  return args;
+  return env;
 }
 
 type AgentTurn = { response: string; commands: AdvertisedCommand[] };
@@ -175,13 +141,15 @@ async function exchange(
   return turn.response;
 }
 
-async function withSandbox<T>(
+async function withAgent<T>(
   config: Config["agent"],
   cwd: string,
   timeoutSeconds: number,
   body: (child: ReturnType<typeof spawn>) => Promise<T>,
 ): Promise<T> {
-  const child = spawn("bwrap", sandboxArguments(config, cwd), {
+  const child = spawn(configuredAgentCommand(config.command), config.args, {
+    cwd,
+    env: agentEnvironment(config),
     stdio: ["pipe", "pipe", "pipe"],
   });
   if (!child.stderr) throw new Error("Could not start ACP agent");
@@ -218,7 +186,7 @@ export async function runAgent(
   timeoutSeconds: number,
   skill?: string,
 ): Promise<string> {
-  return withSandbox(config, cwd, timeoutSeconds, (child) =>
+  return withAgent(config, cwd, timeoutSeconds, (child) =>
     exchange(child, cwd, prompt, reviewSkill(skill)),
   );
 }
@@ -229,7 +197,7 @@ export async function listAgentCommands(
   timeoutSeconds: number,
 ): Promise<AdvertisedCommand[]> {
   const turn: AgentTurn = { response: "", commands: [] };
-  await withSandbox(config, cwd, timeoutSeconds, async (child) => {
+  await withAgent(config, cwd, timeoutSeconds, async (child) => {
     const { stream, app } = clientSession(child, turn);
     await app.connectWith(stream, async (ctx) => {
       const init = await ctx.request(acp.methods.agent.initialize, {

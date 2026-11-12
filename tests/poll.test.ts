@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
-import type { PullRequest } from "../src/github.ts";
+import type { PullRequest, RemoteReview } from "../src/github.ts";
 import { pollRequested } from "../src/poll.ts";
 import { ReviewStore } from "../src/state.ts";
 
@@ -27,7 +27,7 @@ const config: Config = {
   schemaVersion: 1,
   agent: { command: "fixture", args: [] },
   github: { trigger: "review-request" },
-  review: { publish: true, timeoutSeconds: 30, maxFindings: 20 },
+  review: { timeoutSeconds: 30, maxFindings: 20 },
 };
 
 const pr: PullRequest = {
@@ -46,17 +46,21 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
   const store = await ReviewStore.open(path);
   let current = pr;
   let requested = true;
-  let posted: { id: number; url: string } | undefined;
+  let posted: RemoteReview | undefined;
   let reviewCalls = 0;
   let failReview = false;
+  const notifications: string[] = [];
   const deps = {
     load: async () => current,
     requested: async () => requested,
     existing: async () => posted,
+    notify: async (requestedPr: PullRequest) => {
+      notifications.push(requestedPr.url);
+    },
     review: async (
       _url: string,
       _config: Config,
-      _publish?: boolean,
+      _mode?: "draft" | "publish" | "dry-run",
       before?: (pr: PullRequest) => Promise<void>,
     ) => {
       reviewCalls++;
@@ -65,12 +69,15 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
       posted = {
         id: reviewCalls,
         url: `${current.url}#pullrequestreview-${reviewCalls}`,
+        state: "PENDING",
       };
       return {
         url: current.url,
+        repository: current.repository,
+        number: current.number,
         head: current.headRefOid,
         review: { summary: "Clear", findings: [] },
-        publishedReview: posted,
+        postedReview: posted,
       };
     },
   };
@@ -82,6 +89,8 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
       (await pollRequested([pr.url], "ryan", config, store, deps)).skipped,
     ).toBe(1);
     expect(reviewCalls).toBe(1);
+    expect(notifications).toEqual([pr.url]);
+    expect(store.drafts()).toHaveLength(1);
 
     current = { ...pr, headRefOid: "c".repeat(40) };
     posted = undefined;
@@ -95,10 +104,16 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
     expect(
       (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
     ).toBe(1);
-    expect(store.recent()[0]?.published_review_id).toBe(3);
+    expect(store.recent()[0]?.review_id).toBe(3);
+    expect(store.recent()[0]?.review_state).toBe("PENDING");
+    expect(notifications).toHaveLength(2);
 
     current = { ...pr, headRefOid: "d".repeat(40) };
-    posted = { id: 99, url: `${pr.url}#pullrequestreview-99` };
+    posted = {
+      id: 99,
+      url: `${pr.url}#pullrequestreview-99`,
+      state: "PENDING",
+    };
     requested = false;
     expect(
       (await pollRequested([], "ryan", config, store, deps)).completed,
@@ -115,8 +130,9 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
     expect(
       (await pollRequested([], "ryan", config, store, deps)).completed,
     ).toBe(1);
-    expect(store.recent()[0]?.published_review_id).toBe(99);
+    expect(store.recent()[0]?.review_id).toBe(99);
     expect(reviewCalls).toBe(3);
+    expect(notifications).toHaveLength(3);
   } finally {
     store.close();
   }
@@ -160,7 +176,7 @@ test("withdrawn requests do not publish", async () => {
     review: async (
       _url: string,
       _config: Config,
-      _publish?: boolean,
+      _mode?: "draft" | "publish" | "dry-run",
       before?: (pr: PullRequest) => Promise<void>,
     ) => {
       await before?.(pr);
@@ -171,6 +187,60 @@ test("withdrawn requests do not publish", async () => {
     const result = await pollRequested([pr.url], "ryan", config, store, deps);
     expect(result.failed[0]?.error).toBe("Review request was withdrawn");
     expect(store.recent()[0]?.status).toBe("failed");
+  } finally {
+    store.close();
+  }
+});
+
+test("the first poll drafts two existing requests even if desktop notification fails", async () => {
+  const store = await ReviewStore.open(await storePath());
+  const second = {
+    ...pr,
+    number: 13,
+    url: "https://github.com/org/repo/pull/13",
+  };
+  const reviewed: string[] = [];
+  const deps = {
+    load: async (url: string) => (url === second.url ? second : pr),
+    requested: async () => true,
+    existing: async () => undefined,
+    notify: async () => {
+      throw new Error("No desktop session");
+    },
+    review: async (
+      url: string,
+      _config: Config,
+      _mode?: "draft" | "publish" | "dry-run",
+      before?: (pr: PullRequest) => Promise<void>,
+    ) => {
+      const requestedPr = url === second.url ? second : pr;
+      await before?.(requestedPr);
+      reviewed.push(url);
+      return {
+        url,
+        repository: requestedPr.repository,
+        number: requestedPr.number,
+        head: requestedPr.headRefOid,
+        review: { summary: "ready", findings: [] },
+        postedReview: {
+          id: requestedPr.number,
+          url: `${url}#pullrequestreview-${requestedPr.number}`,
+          state: "PENDING" as const,
+        },
+      };
+    },
+  };
+  try {
+    const result = await pollRequested(
+      [pr.url, second.url],
+      "ryan",
+      config,
+      store,
+      deps,
+    );
+    expect(result).toMatchObject({ discovered: 2, completed: 2, failed: [] });
+    expect(reviewed).toEqual([pr.url, second.url]);
+    expect(store.drafts()).toHaveLength(2);
   } finally {
     store.close();
   }

@@ -28,6 +28,8 @@ export async function initializeState(path = appPaths().state): Promise<void> {
     }>;
     if (!columns.some((column) => column.name === "attempt_id"))
       db.exec("ALTER TABLE reviews ADD COLUMN attempt_id TEXT");
+    if (!columns.some((column) => column.name === "review_state"))
+      db.exec("ALTER TABLE reviews ADD COLUMN review_state TEXT");
     db.exec(`
       CREATE TABLE IF NOT EXISTS poll_runs (
         id INTEGER PRIMARY KEY,
@@ -55,7 +57,8 @@ export type ReviewJob = {
   status: "pending" | "running" | "completed" | "failed";
   started_at: string | null;
   completed_at: string | null;
-  published_review_id: number | null;
+  review_id: number | null;
+  review_state: "PENDING" | "COMMENTED" | null;
   error: string | null;
 };
 
@@ -130,14 +133,24 @@ export class ReviewStore {
     return row !== null && row !== undefined;
   }
 
-  complete(claim: { id: number; attemptId: string }, reviewId: number): void {
+  complete(
+    claim: { id: number; attemptId: string },
+    reviewId: number,
+    reviewState: "PENDING" | "COMMENTED" = "COMMENTED",
+  ): void {
     const result = this.db
       .query(`
         UPDATE reviews SET status = 'completed', completed_at = ?,
-          published_review_id = ?, error = NULL
+          published_review_id = ?, review_state = ?, error = NULL
         WHERE id = ? AND attempt_id = ? AND status = 'running'
       `)
-      .run(new Date().toISOString(), reviewId, claim.id, claim.attemptId);
+      .run(
+        new Date().toISOString(),
+        reviewId,
+        reviewState,
+        claim.id,
+        claim.attemptId,
+      );
     if (result.changes !== 1)
       throw new Error("Review claim was lost before completion");
   }
@@ -159,9 +172,45 @@ export class ReviewStore {
   recent(limit = 20): ReviewJob[] {
     return this.db
       .query(
-        "SELECT id, repository, pr_number, head_sha, status, started_at, completed_at, published_review_id, error FROM reviews ORDER BY id DESC LIMIT ?",
+        "SELECT id, repository, pr_number, head_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews ORDER BY id DESC LIMIT ?",
       )
       .all(limit) as ReviewJob[];
+  }
+
+  drafts(): ReviewJob[] {
+    return this.db
+      .query(
+        "SELECT id, repository, pr_number, head_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews WHERE review_state = 'PENDING' ORDER BY id DESC",
+      )
+      .all() as ReviewJob[];
+  }
+
+  recordPosted(
+    repository: string,
+    number: number,
+    head: string,
+    reviewId: number,
+    reviewState: "PENDING" | "COMMENTED",
+  ): void {
+    this.db
+      .query(`
+        INSERT INTO reviews
+          (repository, pr_number, head_sha, status, completed_at, published_review_id, review_state)
+        VALUES (?, ?, ?, 'completed', ?, ?, ?)
+        ON CONFLICT (repository, pr_number, head_sha) DO UPDATE SET
+          status = 'completed', completed_at = excluded.completed_at,
+          published_review_id = excluded.published_review_id,
+          review_state = excluded.review_state, error = NULL
+        WHERE reviews.status != 'running'
+      `)
+      .run(
+        repository,
+        number,
+        head,
+        new Date().toISOString(),
+        reviewId,
+        reviewState,
+      );
   }
 
   recoverable(timeoutSeconds: number): string[] {

@@ -22,11 +22,6 @@ function redacted(config: Config): Config {
 }
 
 function valueFor(key: string, raw: string): unknown {
-  if (key === "review.publish") {
-    if (raw !== "true" && raw !== "false")
-      throw new Error("review.publish must be true or false");
-    return raw === "true";
-  }
   if (key === "review.timeoutSeconds" || key === "review.maxFindings") {
     if (!/^[1-9]\d*$/.test(raw))
       throw new Error(`${key} must be a positive integer`);

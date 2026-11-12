@@ -10,6 +10,11 @@ function echoedReview(received: string): string | undefined {
   const firstLine = received.split("\n")[0] ?? "";
   if (process.env.RPRR_TEST_HOME === "1")
     return JSON.stringify({ summary: process.env.HOME ?? "", findings: [] });
+  if (process.env.RPRR_TEST_INHERITED)
+    return JSON.stringify({
+      summary: process.env.RPRR_TEST_INHERITED,
+      findings: [],
+    });
   if (process.env.RPRR_TEST_ECHO === "1")
     return JSON.stringify({ summary: firstLine, findings: [] });
   if (process.env.RPRR_TEST_NARRATE !== "1") return undefined;
@@ -63,6 +68,8 @@ acp
       },
     );
     let blocked = false;
+    if (process.env.RPRR_TEST_STATE_FILE)
+      await writeFile(process.env.RPRR_TEST_STATE_FILE, "agent state");
     try {
       await writeFile(join(cwd, "should-not-exist"), "bad");
     } catch {

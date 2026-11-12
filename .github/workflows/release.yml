@@ -11,7 +11,6 @@ permissions:
 jobs:
   release:
     name: Build and publish binaries
-    # Ubuntu 24.04 restricts unprivileged user namespaces needed by the sandbox tests.
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -21,16 +20,14 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: .bun-version
-      - name: Install bubblewrap
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y bubblewrap
-      - name: Verify sandbox namespace support
-        run: bwrap --ro-bind / / --tmpfs /tmp --dev-bind /dev /dev --proc /proc true
       - name: Install locked dependencies
         run: bun ci
       - name: Run local quality gate
         run: bun run check
+      - name: Audit locked dependencies
+        run: bun run audit
+      - name: Check packed installation
+        run: bun run package:check
       - name: Check the tag matches package.json
         run: |
           version="$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"

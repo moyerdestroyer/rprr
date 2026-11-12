@@ -1,3 +1,4 @@
+import { resolveAgentCommand } from "./agent-command.ts";
 import { appPaths, loadConfig } from "./config.ts";
 import { configCommand } from "./config-command.ts";
 import { currentLogin, requestedPullRequests } from "./github.ts";
@@ -10,6 +11,7 @@ import {
 } from "./health.ts";
 import { pollRequested } from "./poll.ts";
 import { promptCommand } from "./prompt.ts";
+import { submitExistingDraft } from "./publish.ts";
 import { reviewPullRequest } from "./review.ts";
 import {
   disableService,
@@ -25,22 +27,23 @@ import { version } from "./version.ts";
 const help = `rprr — Ryan's PR Reviewer
 
 Usage:
-  rprr setup [--agent-command EXECUTABLE] [--agent-arg ARG ...] [--publish] [--dry-run] [--skip-agent-probe]
+  rprr setup [--agent-command EXECUTABLE] [--agent-arg ARG ...] [--dry-run] [--skip-agent-probe]
   rprr init [setup options]
   rprr doctor [--deep]
   rprr config show|validate|set|edit
   rprr prompt show|edit|reset
   rprr skills
-  rprr review <PR-number-or-URL> [--publish]
+  rprr review <PR-number-or-URL> [--publish|--dry-run]
   rprr poll
+  rprr drafts
   rprr status
   rprr service install|enable|disable|status|uninstall
   rprr --help
   rprr --version
 
-Review prints a dry run by default. --publish submits a COMMENT review.
-Poll reviews direct requests once and exits; run it from a local scheduler.
-In a terminal, setup asks for the agent and whether to publish or schedule.
+Review creates a pending GitHub review by default. --publish submits a COMMENT review.
+Poll drafts reviews for direct requests once and exits; run it from a local scheduler.
+In a terminal, setup asks for the agent and whether to schedule.
 prompt edit replaces the built-in review instructions.
 skills lists slash commands advertised by the configured agent.`;
 
@@ -62,7 +65,7 @@ async function doctor(deep: boolean): Promise<void> {
     checks.push(["Configuration", true, paths.config, "run rprr setup"]);
     checks.push([
       "ACP agent executable",
-      commandAvailable(config.agent.command),
+      resolveAgentCommand(config.agent.command) !== undefined,
       config.agent.command,
       `not found: ${config.agent.command}`,
     ]);
@@ -74,12 +77,6 @@ async function doctor(deep: boolean): Promise<void> {
       error instanceof Error ? error.message : String(error),
     ]);
   }
-  checks.push([
-    "Read-only sandbox",
-    process.platform === "linux" && commandAvailable("bwrap"),
-    "bubblewrap available",
-    "install bubblewrap on Linux",
-  ]);
   if (deep) checks.push(await handshakeCheck(paths.config));
   for (const [label, pass, success, failure] of checks) {
     console.log(`${pass ? "✓" : "✗"} ${label}: ${pass ? success : failure}`);
@@ -105,8 +102,6 @@ async function handshakeCheck(
 
 async function poll(): Promise<void> {
   const config = await loadConfig();
-  if (!config.review.publish)
-    throw new Error("Polling requires review.publish: true in configuration");
   const store = await ReviewStore.open();
   const runId = store.startPoll();
   try {
@@ -125,6 +120,26 @@ async function poll(): Promise<void> {
       error instanceof Error ? error.message : String(error),
     );
     throw error;
+  } finally {
+    store.close();
+  }
+}
+
+async function drafts(): Promise<void> {
+  const store = await ReviewStore.open();
+  try {
+    console.log(
+      JSON.stringify(
+        store.drafts().map((job) => ({
+          url: `https://github.com/${job.repository}/pull/${job.pr_number}`,
+          reviewUrl: `https://github.com/${job.repository}/pull/${job.pr_number}#pullrequestreview-${job.review_id}`,
+          reviewId: job.review_id,
+          head: job.head_sha,
+        })),
+        null,
+        2,
+      ),
+    );
   } finally {
     store.close();
   }
@@ -163,8 +178,6 @@ async function service(args: string[]): Promise<void> {
       );
       break;
     case "enable":
-      if (!(await loadConfig()).review.publish)
-        throw new Error("Enable publication with `rprr setup --publish` first");
       await enableService();
       console.log("RPRR timer enabled");
       break;
@@ -208,15 +221,60 @@ async function skills(rest: string[]): Promise<void> {
 
 async function review(rest: string[]): Promise<void> {
   const publish = rest.includes("--publish");
-  const selectors = rest.filter((value) => value !== "--publish");
+  const dryRun = rest.includes("--dry-run");
+  const selectors = rest.filter(
+    (value) => value !== "--publish" && value !== "--dry-run",
+  );
   const selector = selectors[0];
-  if (!selector || selectors.length !== 1 || rest.length > 2)
+  if (
+    !selector ||
+    selectors.length !== 1 ||
+    rest.length > 2 ||
+    (publish && dryRun)
+  )
     throw new Error(
-      "review requires one PR number or URL and optional --publish",
+      "review requires one PR number or URL and optional --publish or --dry-run",
     );
+  if (publish) {
+    const submitted = await submitExistingDraft(selector);
+    if (submitted) {
+      const store = await ReviewStore.open();
+      try {
+        store.recordPosted(
+          submitted.repository,
+          submitted.number,
+          submitted.head,
+          submitted.postedReview.id,
+          submitted.postedReview.state,
+        );
+      } finally {
+        store.close();
+      }
+      console.log(JSON.stringify(submitted, null, 2));
+      return;
+    }
+  }
   const config = await loadConfig();
-  const result = await reviewPullRequest(selector, config, publish);
-  console.log(JSON.stringify({ ...result, dryRun: !publish }, null, 2));
+  const result = await reviewPullRequest(
+    selector,
+    config,
+    publish ? "publish" : dryRun ? "dry-run" : "draft",
+  );
+  if (result.postedReview) {
+    const store = await ReviewStore.open();
+    try {
+      store.recordPosted(
+        result.repository,
+        result.number,
+        result.head,
+        result.postedReview.id,
+        result.postedReview.state,
+      );
+    } finally {
+      store.close();
+    }
+  }
+  console.log(JSON.stringify({ ...result, dryRun }, null, 2));
 }
 
 export async function runCli(args: string[]): Promise<void> {
@@ -247,6 +305,10 @@ export async function runCli(args: string[]): Promise<void> {
       case "poll":
         if (rest.length) throw new Error("poll does not accept arguments");
         await poll();
+        break;
+      case "drafts":
+        if (rest.length) throw new Error("drafts accepts no arguments");
+        await drafts();
         break;
       case "status":
         if (rest.length) throw new Error("status does not accept arguments");

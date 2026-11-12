@@ -31,7 +31,7 @@ const sampleConfig: Config = {
   schemaVersion: 1,
   agent: { command: "example-agent", args: ["acp"] },
   github: { trigger: "review-request" },
-  review: { publish: true, timeoutSeconds: 900, maxFindings: 20 },
+  review: { timeoutSeconds: 900, maxFindings: 20 },
 };
 
 test("config is validated and never overwritten", async () => {
@@ -42,10 +42,16 @@ test("config is validated and never overwritten", async () => {
   expect(JSON.parse(await readFile(path, "utf8"))).toEqual(sampleConfig);
 });
 
-test("legacy config without a schema version loads as version one", async () => {
+test("legacy config drops the old publication switch", async () => {
   const path = join(await temporaryPath(), "config.json");
   const { schemaVersion: _version, ...legacy } = sampleConfig;
-  await Bun.write(path, JSON.stringify(legacy));
+  await Bun.write(
+    path,
+    JSON.stringify({
+      ...legacy,
+      review: { ...legacy.review, publish: true },
+    }),
+  );
   expect(await loadConfig(path)).toEqual(sampleConfig);
 });
 
@@ -88,6 +94,7 @@ test("existing review databases gain the claim token column", async () => {
       .query("PRAGMA table_info(reviews)")
       .all() as Array<{ name: string }>;
     expect(columns.some(({ name }) => name === "attempt_id")).toBe(true);
+    expect(columns.some(({ name }) => name === "review_state")).toBe(true);
   } finally {
     migrated.close();
   }
@@ -110,6 +117,23 @@ test("poll runs record success and failure for health reporting", async () => {
     const failure = store.startPoll();
     store.failPoll(failure, "gh unavailable");
     expect(store.latestPoll()?.error).toBe("gh unavailable");
+  } finally {
+    store.close();
+  }
+});
+
+test("manual drafts are listed and disappear after publication", async () => {
+  const store = await ReviewStore.open(
+    join(await temporaryPath(), "reviews.sqlite"),
+  );
+  try {
+    store.recordPosted("org/repo", 12, "a".repeat(40), 52, "PENDING");
+    expect(store.drafts()).toMatchObject([
+      { repository: "org/repo", pr_number: 12, review_id: 52 },
+    ]);
+    store.recordPosted("org/repo", 12, "a".repeat(40), 52, "COMMENTED");
+    expect(store.drafts()).toEqual([]);
+    expect(store.recent()[0]?.review_state).toBe("COMMENTED");
   } finally {
     store.close();
   }

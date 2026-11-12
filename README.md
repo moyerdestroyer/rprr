@@ -6,14 +6,13 @@ Ryan's PR Reviewer is a local-first CLI for reviewing GitHub pull requests throu
 
 ## What it does
 
-RPRR checks out a pull request at its observed head and asks an ACP agent to review it in a read-only sandbox. `review` prints a dry run; `review --publish` can submit a non-approving `COMMENT` review after rechecking the PR. `poll` processes direct review requests once, and `status` reports health, review history, and timer state.
+RPRR checks out a pull request at its observed head and asks an ACP agent to review it in a disposable checkout. `review` creates a pending GitHub review by default. `review --publish` submits an existing draft or posts a new non-approving `COMMENT` review; `review --dry-run` previews without posting. `poll` creates drafts for direct review requests, and `drafts` lists locally tracked pending reviews.
 
 ## Requirements
 
 - Linux
 - [Git](https://git-scm.com/)
 - [GitHub CLI](https://cli.github.com/), authenticated with `gh auth login`
-- [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) for `review`
 - An ACP-compatible coding agent, installed and authenticated separately
 - [Bun](https://bun.sh/), only when running from a source checkout
 
@@ -23,7 +22,7 @@ RPRR checks out a pull request at its observed head and asks an ACP agent to rev
 curl -fsSL https://github.com/moyerdestroyer/rprr/releases/latest/download/install.sh | bash
 ```
 
-The script installs the latest Linux x64 or arm64 release into `~/.local/bin` and adds that directory to your bash or zsh startup file when it is not already on `PATH`. It checks dependencies, and on a first run starts `rprr setup`. In a terminal, setup asks which agent to use, whether to post `COMMENT` reviews, and whether to check for review requests every 15 minutes. Run the same command again to update. An update keeps the existing configuration and refreshes a generated systemd unit when the binary changes.
+The script installs the latest Linux x64 or arm64 release into `~/.local/bin` and adds that directory to your bash or zsh startup file when it is not already on `PATH`. It checks dependencies, and on a first run starts `rprr setup`. In a terminal, setup asks which agent to use and whether to check for review requests every 15 minutes. Run the same command again to update. An update keeps the existing configuration and refreshes a generated systemd unit when the binary changes.
 
 ## Install from source
 
@@ -41,23 +40,24 @@ rprr --help
 ## Get started
 
 ```bash
-rprr setup --agent-command cmd --agent-arg --no-session --agent-arg --no-auto-update --agent-arg acp
+rprr setup                     # choose any installed ACP agent and its arguments
 rprr doctor --deep
 rprr config show
 rprr config validate
 rprr config set review.maxFindings 20
-rprr review https://github.com/OWNER/REPO/pull/123
-rprr setup --publish       # explicitly enable publication
-rprr review https://github.com/OWNER/REPO/pull/123 --publish
-rprr poll                  # process direct review requests once
+rprr review https://github.com/OWNER/REPO/pull/123 --dry-run
+rprr review https://github.com/OWNER/REPO/pull/123            # create a draft
+rprr review https://github.com/OWNER/REPO/pull/123 --publish  # submit the draft
+rprr poll                  # draft direct review requests once
+rprr drafts                # list locally tracked pending reviews
 rprr status                # health, last poll, service, and recent jobs
 rprr service install       # install local timer, disabled
 rprr service enable        # explicitly start automatic polling
 ```
 
-`setup` can be rerun safely. It accepts `--dry-run` to preview changes and probes the ACP agent before saving. New configurations start with publication disabled. In a terminal, the first setup asks before enabling publication or the timer. Repeat `--agent-arg` for each argument. Pass `--agent-command` for a non-interactive setup; without it, setup reuses an existing command. `init` remains an alias.
+`setup` can be rerun safely. It accepts `--dry-run` to preview changes and probes the ACP agent before saving. In a terminal, enter any ACP agent executable or path and its ACP mode arguments. Repeat `--agent-arg` for each argument in a non-interactive setup. Setup resolves the executable to an absolute path so scheduled runs use the same installation. Pass `--agent-command` for a non-interactive setup; without it, setup reuses an existing command. `init` remains an alias.
 
-Use `rprr config show|validate|set|edit` for later changes. Updates are written atomically with the previous file saved as `config.json.bak`; `config show` redacts `agent.env` values. Set `VISUAL` or `EDITOR` to an executable path for `config edit` and `prompt edit`. The sandbox sets the agent's `HOME` to yours, so an existing login stays visible. `agent.env` overrides that environment. For Command Code, use `--no-session --no-auto-update acp` as the agent arguments. `--skip-agent-probe` is available when you need to save the config before troubleshooting the agent.
+Use `rprr config show|validate|set|edit` for later changes. Updates are written atomically with the previous file saved as `config.json.bak`; `config show` redacts `agent.env` values. Set `VISUAL` or `EDITOR` to an executable path for `config edit` and `prompt edit`. The agent inherits the launch environment, including `HOME` and `PATH`, so existing login and state remain available. `agent.env` overrides that environment. `--skip-agent-probe` is available when you need to save the config before troubleshooting the agent.
 
 `rprr prompt show` prints the review instructions. `rprr prompt edit` saves a copy at `~/.config/rprr/prompt.md` and opens it. `rprr prompt reset` returns to the built-in instructions. `rprr config set review.promptFile /absolute/path.md` uses another file, and an empty value clears it. RPRR still appends the instruction to return JSON and to treat the pull request as untrusted data.
 
@@ -69,11 +69,11 @@ Example configuration:
 {
   "schemaVersion": 1,
   "agent": {
-    "command": "cmd",
-    "args": ["--no-session", "--no-auto-update", "acp"]
+    "command": "/home/you/.local/bin/your-acp-agent",
+    "args": ["acp"]
   },
   "github": { "trigger": "review-request" },
-  "review": { "publish": false, "timeoutSeconds": 900, "maxFindings": 20 }
+  "review": { "timeoutSeconds": 900, "maxFindings": 20 }
 }
 ```
 
@@ -86,13 +86,15 @@ Mutable data follows XDG paths. `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CA
 | Review state    | `~/.local/state/rprr/reviews.sqlite` |
 | Reserved cache  | `~/.cache/rprr/`                     |
 
-Polling requires `review.publish: true` in the config. Manual publication requires that setting and an explicit `--publish` flag. Before posting, publication checks GitHub for an existing RPRR `COMMENT` review on the same head. Polling records one claim per repository, PR, and head in SQLite, retries failures, and reconciles posted reviews after interrupted runs. A new head is eligible for a new review. `poll` exits after one pass; run it manually or schedule it locally. It handles direct requests for the signed-in `gh` user, not team review requests.
+Polling finds open PRs that currently request a review from the signed-in `gh` user, including requests made before RPRR was installed. It creates a pending GitHub review, with draft inline comments, for each new PR head. A pending review is not submitted publicly until you run `rprr review PR --publish` or submit it on GitHub. `--publish` also posts a new review directly when no draft exists; it never approves or requests changes. Before posting, RPRR rechecks the PR head and base and validates inline locations. Polling records one claim per repository, PR, and head in SQLite, retries failures, and reconciles reviews after interrupted runs. It handles direct requests, not team review requests.
+
+GitHub sends the reviewer its usual review-request notification. After RPRR creates a draft, it attempts a local desktop notification with the RPRR mascot icon via `notify-send` when available. A background timer or cron job may run without a desktop notification session, so the toast is best effort. `rprr drafts` and `rprr status` show locally tracked drafts even if no toast appears. `rprr poll` runs one pass immediately; the timer checks every 15 minutes.
 
 For recurring local runs, see the [systemd user timer and cron setup](docs/scheduling.md). Scheduling is opt-in and runs under your own account.
 
 ## Safety
 
-RPRR never approves, merges, or modifies a PR. Before publication it rechecks the PR head and base and validates inline comment locations. The agent runs with read-only access to the host filesystem and a writable temporary directory; ACP permission requests allow reads and searches and reject edits. The sandbox does not hide readable host files or block network access, so use a trusted agent and take care with its credentials. RPRR does not run PR code itself.
+RPRR never approves, merges, or modifies a PR. Before publication it rechecks the PR head and base and validates inline comment locations against the original checkout. Agent changes to the temporary checkout are discarded before findings are validated. ACP permission requests allow reads and searches and reject edits. Agents run with your account's normal filesystem and network access, so use a trusted agent and take care with its credentials. RPRR does not run PR code itself.
 
 ## Release
 

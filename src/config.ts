@@ -19,13 +19,15 @@ const configSchema = z.strictObject({
     env: z.record(z.string(), z.string()).optional(),
   }),
   github: z.strictObject({ trigger: z.literal("review-request") }),
-  review: z.strictObject({
-    publish: z.boolean(),
-    timeoutSeconds: z.number().int().positive(),
-    maxFindings: z.number().int().positive(),
-    promptFile: z.string().min(1).optional(),
-    skill: z.string().min(1).optional(),
-  }),
+  review: z
+    .strictObject({
+      publish: z.boolean().optional(),
+      timeoutSeconds: z.number().int().positive(),
+      maxFindings: z.number().int().positive(),
+      promptFile: z.string().min(1).optional(),
+      skill: z.string().min(1).optional(),
+    })
+    .transform(({ publish: _legacyPublish, ...review }) => review),
 });
 
 export type Config = z.infer<typeof configSchema>;

@@ -9,23 +9,27 @@ import {
   checkoutPullRequest,
   loadPullRequest,
   type PullRequest,
+  type RemoteReview,
+  restoreCheckout,
 } from "./github.ts";
 import { composeReviewPrompt, reviewInstructions } from "./prompt.ts";
-import { publishReview } from "./publish.ts";
+import { postReview } from "./publish.ts";
+
+export type ReviewMode = "draft" | "publish" | "dry-run";
 
 export async function reviewPullRequest(
   selector: string,
   config: Config,
-  publish = false,
-  beforePublish?: (pr: PullRequest) => Promise<void>,
+  mode: ReviewMode = "draft",
+  beforePost?: (pr: PullRequest) => Promise<void>,
 ): Promise<{
   url: string;
+  repository: string;
+  number: number;
   head: string;
   review: Review;
-  publishedReview?: { id: number; url: string };
+  postedReview?: RemoteReview;
 }> {
-  if (publish && !config.review.publish)
-    throw new Error("Review publication is disabled in configuration");
   const pr = await loadPullRequest(selector);
   const checkout = await checkoutPullRequest(pr);
   try {
@@ -44,17 +48,21 @@ export async function reviewPullRequest(
       config.review.timeoutSeconds,
       config.review.skill,
     );
+    await restoreCheckout(checkout.path, pr.headRefOid);
     const review = parseReview(output, config.review.maxFindings);
     await validateFindingLocations(review, checkout.path);
-    if (publish) await beforePublish?.(pr);
-    const publishedReview = publish
-      ? await publishReview(pr, review, checkout.diff)
-      : undefined;
+    if (mode !== "dry-run") await beforePost?.(pr);
+    const postedReview =
+      mode !== "dry-run"
+        ? await postReview(pr, review, checkout.diff, mode === "publish")
+        : undefined;
     return {
       url: pr.url,
+      repository: pr.repository,
+      number: pr.number,
       head: pr.headRefOid,
       review,
-      ...(publishedReview ? { publishedReview } : {}),
+      ...(postedReview ? { postedReview } : {}),
     };
   } finally {
     await checkout.cleanup();

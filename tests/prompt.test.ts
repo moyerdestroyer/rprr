@@ -121,7 +121,7 @@ test("prompt override rejects missing files and keeps a custom path", async () =
     config,
     `${JSON.stringify({
       schemaVersion: 1,
-      agent: { command: "cmd", args: [] },
+      agent: { command: "acp-reviewer", args: [] },
       github: { trigger: "review-request" },
       review: { publish: false, timeoutSeconds: 900, maxFindings: 20 },
     })}\n`,

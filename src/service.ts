@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveAgentCommand } from "./agent-command.ts";
 import { appPaths, type Config } from "./config.ts";
 
 export function pollLaunch(
@@ -52,6 +53,7 @@ export function renderUnits(launch: string[], agent: string, gh: string) {
       dirname(executable),
       dirname(agent),
       dirname(gh),
+      ...(process.env.PATH ?? "").split(":").filter(Boolean),
       "/usr/local/bin",
       "/usr/bin",
       "/bin",
@@ -123,7 +125,7 @@ export async function installService(
     throw new Error("User timer setup requires Linux");
   const standalone = Bun.isStandaloneExecutable;
   const bun = Bun.which("bun") ?? undefined;
-  const agent = Bun.which(config.agent.command);
+  const agent = resolveAgentCommand(config.agent.command);
   const gh = Bun.which("gh");
   if (
     (!standalone && !bun) ||

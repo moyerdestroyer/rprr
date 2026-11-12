@@ -15,6 +15,11 @@ const prSchema = z.object({
 
 export type PullRequest = z.infer<typeof prSchema> & { repository: string };
 export const reviewMarker = "RPRR review (non-approving)";
+export type RemoteReview = {
+  id: number;
+  url: string;
+  state: "PENDING" | "COMMENTED";
+};
 
 const searchResultSchema = z.array(z.object({ url: z.string().url() }));
 const requestedSchema = z.object({
@@ -28,6 +33,7 @@ const remoteReviewsSchema = z.array(
       body: z.string().nullable(),
       commit_id: z.string(),
       html_url: z.string().url(),
+      user: z.object({ login: z.string() }),
     }),
   ),
 );
@@ -116,20 +122,31 @@ export async function isReviewRequested(
 
 export async function existingReview(
   pr: PullRequest,
-): Promise<{ id: number; url: string } | undefined> {
+  login?: string,
+): Promise<RemoteReview | undefined> {
+  const reviewer = login ?? (await currentLogin());
   const endpoint = `repos/${pr.repository}/pulls/${pr.number}/reviews`;
   const pages = remoteReviewsSchema.parse(
     JSON.parse(await run(["gh", "api", endpoint, "--paginate", "--slurp"])),
   );
-  const match = pages
+  const matches = pages
     .flat()
-    .find(
+    .filter(
       (review) =>
-        review.state === "COMMENTED" &&
+        (review.state === "PENDING" || review.state === "COMMENTED") &&
+        review.user.login.toLowerCase() === reviewer.toLowerCase() &&
         review.commit_id === pr.headRefOid &&
         review.body?.startsWith(reviewMarker),
     );
-  return match ? { id: match.id, url: match.html_url } : undefined;
+  const match =
+    matches.find((review) => review.state === "PENDING") ?? matches[0];
+  return match
+    ? {
+        id: match.id,
+        url: match.html_url,
+        state: match.state as RemoteReview["state"],
+      }
+    : undefined;
 }
 
 export async function checkoutPullRequest(
@@ -181,4 +198,15 @@ export async function checkoutPullRequest(
     await rm(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+export async function restoreCheckout(
+  path: string,
+  head: string,
+): Promise<void> {
+  if (!/^[0-9a-f]{40}$/.test(head)) throw new Error("Invalid PR head");
+  await run(["git", "reset", "--hard", head], path);
+  await run(["git", "clean", "-ffdx"], path);
+  if ((await run(["git", "rev-parse", "HEAD"], path)) !== head)
+    throw new Error("PR checkout head changed during review");
 }

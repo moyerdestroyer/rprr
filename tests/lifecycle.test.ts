@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pollLaunch, renderUnits } from "../src/service.ts";
+import { ReviewStore } from "../src/state.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const temporary: string[] = [];
@@ -82,7 +83,9 @@ test("repeatable setup and service lifecycle stay inside an isolated home", asyn
   expect(
     (await cli("setup", "--agent-command", agent, "--skip-agent-probe")).code,
   ).toBe(0);
-  expect(JSON.parse(await readFile(config, "utf8")).review.publish).toBe(false);
+  expect(
+    JSON.parse(await readFile(config, "utf8")).review.publish,
+  ).toBeUndefined();
   expect((await cli("setup", "--skip-agent-probe")).stdout).toContain(
     "Configuration unchanged",
   );
@@ -93,13 +96,12 @@ test("repeatable setup and service lifecycle stay inside an isolated home", asyn
   );
   expect(unit).toContain("ExecStart=");
   expect(unit).toContain("bin/rprr.ts");
-  expect((await cli("service", "enable")).code).toBe(1);
-  expect((await cli("setup", "--publish", "--skip-agent-probe")).code).toBe(0);
-  expect(JSON.parse(await readFile(config, "utf8")).review.publish).toBe(true);
-  expect(
-    JSON.parse(await readFile(`${config}.bak`, "utf8")).review.publish,
-  ).toBe(false);
+  expect(unit).toContain(binPath(env.PATH));
+  expect((await cli("service", "enable")).code).toBe(0);
   expect((await cli("config", "set", "review.maxFindings", "7")).code).toBe(0);
+  expect(
+    JSON.parse(await readFile(`${config}.bak`, "utf8")).review.maxFindings,
+  ).toBe(20);
   expect((await cli("config", "edit")).code).toBe(0);
   expect(JSON.parse(await readFile(config, "utf8")).review.maxFindings).toBe(8);
   const withSecret = JSON.parse(await readFile(config, "utf8"));
@@ -126,7 +128,7 @@ test("repeatable setup and service lifecycle stay inside an isolated home", asyn
   expect((await cli("service", "install")).code).toBe(1);
 });
 
-test("deep doctor validates an ACP agent inside the read-only sandbox", async () => {
+test("deep doctor validates an ACP agent with the normal launch environment", async () => {
   const { cli } = await fixture();
   const agent = fileURLToPath(new URL("./fixtures/agent.ts", import.meta.url));
   const setup = await cli(
@@ -136,27 +138,31 @@ test("deep doctor validates an ACP agent inside the read-only sandbox", async ()
     "--agent-arg",
     agent,
   );
-  expect(setup.code).toBe(0);
+  expect(setup.code, setup.stderr).toBe(0);
   const doctor = await cli("doctor", "--deep");
   expect(doctor.code).toBe(0);
   expect(doctor.stdout).toContain("✓ ACP handshake");
-  expect(doctor.stdout).toContain("✓ Read-only sandbox");
 });
 
 test("generated unit quotes executable paths and preserves custom agent path", () => {
   const units = renderUnits(
     ["/opt/bun/bin/bun", "/opt/rprr/bin/rprr.ts", "poll"],
-    "/opt/agent/bin/cmd",
+    "/opt/agent/bin/acp-reviewer",
     "/usr/bin/gh",
   );
   expect(units.service).toContain(
     'ExecStart="/opt/bun/bin/bun" "/opt/rprr/bin/rprr.ts" "poll"',
   );
   expect(units.service).toContain("/opt/agent/bin");
+  expect(units.service).toContain(
+    (process.env.PATH ?? "")
+      .split(":")
+      .find((entry) => entry.includes(".bun/bin")) ?? "/usr/bin",
+  );
   expect(units.timer).toContain("Persistent=true");
   const standalone = renderUnits(
     ["/home/user/.local/bin/rprr", "poll"],
-    "/opt/agent/bin/cmd",
+    "/opt/agent/bin/acp-reviewer",
     "/usr/bin/gh",
   );
   expect(standalone.service).toContain(
@@ -177,12 +183,86 @@ test("generated unit quotes executable paths and preserves custom agent path", (
   expect(() => pollLaunch(false, undefined, "/x", "/y")).toThrow(/bun/);
 });
 
+function binPath(path: string): string {
+  return path.split(":")[0] ?? "";
+}
+
+test("setup resolves an agent on PATH to a stable executable path", async () => {
+  const { home, config, cli } = await fixture();
+  const agent = join(home, "bin", "other-acp-agent");
+  await writeFile(agent, "#!/bin/sh\nexit 0\n");
+  await chmod(agent, 0o755);
+  const result = await cli(
+    "setup",
+    "--agent-command",
+    "other-acp-agent",
+    "--agent-arg",
+    "acp",
+    "--skip-agent-probe",
+  );
+  expect(result.code).toBe(0);
+  expect(JSON.parse(await readFile(config, "utf8")).agent.command).toBe(agent);
+  expect(
+    (await cli("setup", "--agent-command", agent, "--skip-agent-probe")).code,
+  ).toBe(0);
+  expect(JSON.parse(await readFile(config, "utf8")).agent.args).toEqual([
+    "acp",
+  ]);
+});
+
+test("a differently named ACP executable works through setup and doctor", async () => {
+  const { config, cli } = await fixture();
+  const temporaryDirectory = await mkdtemp(join(root, ".rprr-agent-tools-"));
+  temporary.push(temporaryDirectory);
+  const directory = join(temporaryDirectory, "agent tools");
+  await mkdir(directory);
+  const executable = join(directory, "alternate reviewer");
+  const fixtureAgent = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  await writeFile(
+    executable,
+    `#!/bin/sh\nexec "${process.execPath}" "${fixtureAgent}" "$@"\n`,
+  );
+  await chmod(executable, 0o755);
+  const setup = await cli("setup", "--agent-command", executable);
+  if (setup.code !== 0) throw new Error(setup.stderr);
+  expect(setup.code).toBe(0);
+  expect(JSON.parse(await readFile(config, "utf8")).agent.command).toBe(
+    executable,
+  );
+  const doctor = await cli("doctor", "--deep");
+  expect(doctor.code).toBe(0);
+  expect(doctor.stdout).toContain("✓ ACP handshake");
+});
+
 test("setup without a terminal requires an agent command", async () => {
   const { config, cli } = await fixture();
   const result = await cli("setup");
   expect(result.code).toBe(1);
   expect(result.stderr).toContain("--agent-command");
   await expect(readFile(config)).rejects.toThrow();
+});
+
+test("drafts command lists locally recorded pending reviews", async () => {
+  const { env, cli } = await fixture();
+  const store = await ReviewStore.open(
+    join(env.XDG_STATE_HOME, "rprr", "reviews.sqlite"),
+  );
+  try {
+    store.recordPosted("org/repo", 12, "a".repeat(40), 52, "PENDING");
+  } finally {
+    store.close();
+  }
+  const drafts = await cli("drafts");
+  expect(drafts.code).toBe(0);
+  expect(JSON.parse(drafts.stdout)).toMatchObject([
+    {
+      url: "https://github.com/org/repo/pull/12",
+      reviewUrl: "https://github.com/org/repo/pull/12#pullrequestreview-52",
+      reviewId: 52,
+    },
+  ]);
 });
 
 test("setup rejects broken authentication and a missing agent without writing config", async () => {

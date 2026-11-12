@@ -1,23 +1,20 @@
 import { mkdir } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
+import { configuredAgentCommand } from "./agent-command.ts";
 import { appPaths, type Config, loadConfig, saveConfig } from "./config.ts";
 import { commandAvailable, githubAuthenticated, probeAgent } from "./health.ts";
 import { enableService, installService } from "./service.ts";
 import { initializeState } from "./state.ts";
 
-const commandCodeArgs = ["--no-session", "--no-auto-update", "acp"];
-
 type SetupChoices = {
   command: string;
   args: string[];
-  publish: boolean;
   enableTimer: boolean;
 };
 
 type Options = {
   command?: string;
   args: string[];
-  publish?: boolean;
   dryRun: boolean;
   skipProbe: boolean;
 };
@@ -46,12 +43,6 @@ function applyOption(
     case "--skip-agent-probe":
       options.skipProbe = true;
       return 0;
-    case "--publish":
-      options.publish = true;
-      return 0;
-    case "--no-publish":
-      options.publish = false;
-      return 0;
     case "--agent-command":
     case "--agent-arg":
       if (!value) throw new Error(`${token} requires a value`);
@@ -66,7 +57,6 @@ function applyOption(
 type ResolvedSetup = {
   command: string;
   args?: string[];
-  publish?: boolean;
   enableTimer: boolean;
 };
 
@@ -99,7 +89,6 @@ function proposedConfig(
     },
     github: { trigger: "review-request" },
     review: {
-      publish: resolved.publish ?? current?.review.publish ?? false,
       timeoutSeconds: current?.review.timeoutSeconds ?? 900,
       maxFindings: current?.review.maxFindings ?? 20,
       ...(current?.review.promptFile
@@ -110,8 +99,8 @@ function proposedConfig(
   };
 }
 
-function checkDependencies(command: string): void {
-  for (const executable of ["git", "gh", "bwrap", command]) {
+function checkDependencies(): void {
+  for (const executable of ["git", "gh"]) {
     if (!commandAvailable(executable))
       throw new Error(`Required executable not found: ${executable}`);
   }
@@ -164,67 +153,46 @@ function splitAgentArgs(value: string): string[] {
 async function customAgent(
   ask: (prompt: string) => Promise<string>,
 ): Promise<{ command: string; args: string[] }> {
-  const command = (await ask("ACP agent executable: ")).trim();
+  const command = (await ask("ACP agent executable or path: ")).trim();
   if (!command) throw new Error("An ACP agent executable is required");
+  const input = await ask(
+    "ACP arguments, separated by spaces (blank for none): ",
+  );
   return {
     command,
-    args: splitAgentArgs(
-      await ask("Agent arguments, separated by spaces (blank for none): "),
-    ),
+    args: splitAgentArgs(input),
   };
-}
-
-async function chosenAgent(
-  ask: (prompt: string) => Promise<string>,
-  commandCode: boolean,
-): Promise<{ command: string; args: string[] }> {
-  if (!commandCode) return customAgent(ask);
-  const usePreset = decideYesNo(
-    await ask("Use cmd with --no-session --no-auto-update acp? [Y/n] "),
-    true,
-  );
-  if (usePreset) return { command: "cmd", args: commandCodeArgs };
-  return customAgent(ask);
 }
 
 export async function interviewSetup(
   ask: (prompt: string) => Promise<string>,
-  available: { commandCode: boolean; timer: boolean; publish?: boolean },
+  available: { timer: boolean },
 ): Promise<SetupChoices> {
-  const agent = await chosenAgent(ask, available.commandCode);
-  const publish =
-    available.publish ??
-    decideYesNo(
-      await ask("Post COMMENT reviews for direct review requests? [y/N] "),
-      false,
-    );
+  const agent = await customAgent(ask);
   const enableTimer =
-    publish &&
     available.timer &&
     decideYesNo(
       await ask("Check for review requests every 15 minutes? [y/N] "),
       false,
     );
-  return { ...agent, publish, enableTimer };
+  return { ...agent, enableTimer };
 }
 
 function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
-async function promptSetup(publish?: boolean): Promise<ResolvedSetup> {
+async function promptSetup(): Promise<ResolvedSetup> {
   const prompt = createInterface({
     input: process.stdin,
     output: process.stdout,
   });
   try {
     return await interviewSetup((question) => prompt.question(question), {
-      commandCode: commandAvailable("cmd"),
       timer:
         process.platform === "linux" &&
         commandAvailable("systemctl") &&
         commandAvailable("systemd-analyze"),
-      publish,
     });
   } finally {
     prompt.close();
@@ -238,12 +206,11 @@ async function resolveSetup(
   if (options.command || current)
     return {
       command: options.command ?? current?.agent.command ?? "",
-      publish: options.publish,
       enableTimer: false,
     };
   if (!isInteractive())
     throw new Error("Pass --agent-command when running without a terminal");
-  return promptSetup(options.publish);
+  return promptSetup();
 }
 
 async function startTimer(config: Config): Promise<void> {
@@ -263,9 +230,13 @@ export async function setup(args: string[]): Promise<void> {
   const options = parseOptions(args);
   const paths = appPaths();
   const current = await currentConfig(paths.config);
-  const resolved = await resolveSetup(options, current);
+  const selected = await resolveSetup(options, current);
+  const resolved = {
+    ...selected,
+    command: configuredAgentCommand(selected.command),
+  };
   const config = proposedConfig(options, current, resolved);
-  checkDependencies(resolved.command);
+  checkDependencies();
   showPreview(
     paths.config,
     config,
@@ -282,12 +253,7 @@ export async function setup(args: string[]): Promise<void> {
     await startTimer(config);
     return;
   }
-  if (!config.review.publish)
-    console.log(
-      "Publication is disabled. Run `rprr setup --publish` when ready.",
-    );
-  else
-    console.log(
-      "Run `rprr poll` once, or `rprr service enable` to start the timer.",
-    );
+  console.log(
+    "Run `rprr poll` once, or `rprr service enable` to start drafting reviews.",
+  );
 }
