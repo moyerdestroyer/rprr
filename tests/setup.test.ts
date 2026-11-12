@@ -25,7 +25,7 @@ test("interview accepts any ACP executable and leaves the timer off", async () =
   });
   expect(prompts).toEqual([
     "ACP agent executable or path: ",
-    "ACP arguments, separated by spaces (blank for none): ",
+    "ACP arguments, separated by spaces (blank to auto-detect): ",
     "Check for review requests every 15 minutes? [y/N] ",
   ]);
 });

@@ -88,6 +88,9 @@ test("install script installs, skips a second run, and replaces an update", asyn
   expect(first.stdout).toContain("Installed rprr v0.1.0");
   expect(first.stdout).toContain("Starting setup.");
   expect(first.calls).toContain("setup");
+  expect(first.calls.indexOf("setup")).toBeLessThan(
+    first.calls.indexOf("doctor"),
+  );
   expect(await readFile(join(fixture.home, ".bashrc"), "utf8")).toContain(
     first.installDir,
   );

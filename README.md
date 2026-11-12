@@ -55,7 +55,7 @@ rprr service install       # install local timer, disabled
 rprr service enable        # explicitly start automatic polling
 ```
 
-`setup` can be rerun safely. It accepts `--dry-run` to preview changes and probes the ACP agent before saving. In a terminal, enter any ACP agent executable or path and its ACP mode arguments. Repeat `--agent-arg` for each argument in a non-interactive setup. Setup resolves the executable to an absolute path so scheduled runs use the same installation. Pass `--agent-command` for a non-interactive setup; without it, setup reuses an existing command. `init` remains an alias.
+`setup` can be rerun safely. It accepts `--dry-run` to preview changes and probes the ACP agent before saving. In a terminal, enter any ACP agent executable or path and its ACP mode arguments. If no arguments are given and the agent does not speak ACP directly, setup tries the common `acp` subcommand and saves it when the probe succeeds. Repeat `--agent-arg` for each argument in a non-interactive setup. Setup resolves the executable to an absolute path so scheduled runs use the same installation. Pass `--agent-command` for a non-interactive setup; without it, setup reuses an existing command. `init` remains an alias.
 
 Use `rprr config show|validate|set|edit` for later changes. Updates are written atomically with the previous file saved as `config.json.bak`; `config show` redacts `agent.env` values. Set `VISUAL` or `EDITOR` to an executable path for `config edit` and `prompt edit`. The agent inherits the launch environment, including `HOME` and `PATH`, so existing login and state remain available. `agent.env` overrides that environment. `--skip-agent-probe` is available when you need to save the config before troubleshooting the agent.
 

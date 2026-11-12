@@ -150,7 +150,6 @@ finish_setup() {
     "$dest" doctor
     return
   fi
-  "$dest" doctor || true
   if [ "${RPRR_INSTALL_ASSUME_TTY:-}" = 1 ] || { [ -t 1 ] && [ -r /dev/tty ]; }; then
     printf "Starting setup.\n"
     if [ "${RPRR_INSTALL_ASSUME_TTY:-}" = 1 ]; then
@@ -158,6 +157,7 @@ finish_setup() {
     else
       "$dest" setup </dev/tty
     fi
+    "$dest" doctor
     return
   fi
   printf "Installed rprr %s. Run: rprr doctor && rprr setup\n" "$tag"

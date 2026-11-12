@@ -236,6 +236,38 @@ test("a differently named ACP executable works through setup and doctor", async 
   expect(doctor.stdout).toContain("✓ ACP handshake");
 });
 
+test("setup discovers an ACP subcommand and keeps explicit arguments strict", async () => {
+  const { home, config, cli } = await fixture();
+  const executable = join(home, "bin", "subcommand-agent");
+  const fixtureAgent = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  await writeFile(
+    executable,
+    `#!/bin/sh\nif [ "$1" != acp ]; then\n  echo 'Interactive mode requires a TTY terminal.' >&2\n  exit 1\nfi\nshift\nexec "${process.execPath}" "${fixtureAgent}" "$@"\n`,
+  );
+  await chmod(executable, 0o755);
+  const setup = await cli("setup", "--agent-command", executable);
+  expect(setup.code, setup.stderr).toBe(0);
+  expect(setup.stdout).toContain('"acp"');
+  expect(JSON.parse(await readFile(config, "utf8")).agent.args).toEqual([
+    "acp",
+  ]);
+  expect((await cli("doctor", "--deep")).code).toBe(0);
+  const wrong = await cli(
+    "setup",
+    "--agent-command",
+    executable,
+    "--agent-arg",
+    "wrong",
+  );
+  expect(wrong.code).toBe(1);
+  expect(wrong.stderr).toContain("TTY terminal");
+  expect(JSON.parse(await readFile(config, "utf8")).agent.args).toEqual([
+    "acp",
+  ]);
+});
+
 test("setup without a terminal requires an agent command", async () => {
   const { config, cli } = await fixture();
   const result = await cli("setup");

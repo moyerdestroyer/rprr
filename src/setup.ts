@@ -156,7 +156,7 @@ async function customAgent(
   const command = (await ask("ACP agent executable or path: ")).trim();
   if (!command) throw new Error("An ACP agent executable is required");
   const input = await ask(
-    "ACP arguments, separated by spaces (blank for none): ",
+    "ACP arguments, separated by spaces (blank to auto-detect): ",
   );
   return {
     command,
@@ -226,6 +226,33 @@ async function startTimer(config: Config): Promise<void> {
   console.log("Timer enabled. It checks every 15 minutes.");
 }
 
+async function probeSetupAgent(config: Config): Promise<Config> {
+  try {
+    await probeAgent(config);
+    return config;
+  } catch (directError) {
+    if (config.agent.args.length > 0) throw directError;
+    const withAcp = {
+      ...config,
+      agent: { ...config.agent, args: ["acp"] },
+    };
+    try {
+      await probeAgent(withAcp);
+      return withAcp;
+    } catch (acpError) {
+      const direct =
+        directError instanceof Error
+          ? directError.message
+          : String(directError);
+      const subcommand =
+        acpError instanceof Error ? acpError.message : String(acpError);
+      throw new Error(
+        `Agent did not complete an ACP probe directly or with the \`acp\` subcommand.\nDirect: ${direct}\nWith \`acp\`: ${subcommand}\nEnter this agent's ACP launch arguments during setup or pass --agent-arg.`,
+      );
+    }
+  }
+}
+
 export async function setup(args: string[]): Promise<void> {
   const options = parseOptions(args);
   const paths = appPaths();
@@ -235,15 +262,18 @@ export async function setup(args: string[]): Promise<void> {
     ...selected,
     command: configuredAgentCommand(selected.command),
   };
-  const config = proposedConfig(options, current, resolved);
+  const proposed = proposedConfig(options, current, resolved);
   checkDependencies();
+  const config =
+    options.dryRun || options.skipProbe
+      ? proposed
+      : await probeSetupAgent(proposed);
   showPreview(
     paths.config,
     config,
     options.dryRun ? "preview" : current ? "update" : "create",
   );
   if (options.dryRun) return;
-  if (!options.skipProbe) await probeAgent(config);
   const result = await saveConfig(config, paths.config);
   await initializeState(paths.state);
   await mkdir(paths.cache, { recursive: true, mode: 0o700 });
