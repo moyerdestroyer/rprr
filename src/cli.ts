@@ -246,6 +246,7 @@ async function review(rest: string[]): Promise<void> {
           submitted.head,
           submitted.postedReview.id,
           submitted.postedReview.state,
+          submitted.base,
         );
       } finally {
         store.close();
@@ -259,6 +260,15 @@ async function review(rest: string[]): Promise<void> {
     selector,
     config,
     publish ? "publish" : dryRun ? "dry-run" : "draft",
+    undefined,
+    async (pr, reviewId) => {
+      const store = await ReviewStore.open();
+      try {
+        store.clearDeletedDraft(pr.repository, pr.number, reviewId);
+      } finally {
+        store.close();
+      }
+    },
   );
   if (result.postedReview) {
     const store = await ReviewStore.open();
@@ -269,6 +279,7 @@ async function review(rest: string[]): Promise<void> {
         result.head,
         result.postedReview.id,
         result.postedReview.state,
+        result.base,
       );
     } finally {
       store.close();

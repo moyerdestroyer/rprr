@@ -70,12 +70,14 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
         id: reviewCalls,
         url: `${current.url}#pullrequestreview-${reviewCalls}`,
         state: "PENDING",
+        baseSha: current.baseRefOid,
       };
       return {
         url: current.url,
         repository: current.repository,
         number: current.number,
         head: current.headRefOid,
+        base: current.baseRefOid,
         review: { summary: "Clear", findings: [] },
         postedReview: posted,
       };
@@ -113,6 +115,7 @@ test("claims each head once, retries failures, and recovers posted reviews", asy
       id: 99,
       url: `${pr.url}#pullrequestreview-99`,
       state: "PENDING",
+      baseSha: current.baseRefOid,
     };
     requested = false;
     expect(
@@ -221,6 +224,7 @@ test("the first poll drafts two existing requests even if desktop notification f
         repository: requestedPr.repository,
         number: requestedPr.number,
         head: requestedPr.headRefOid,
+        base: requestedPr.baseRefOid,
         review: { summary: "ready", findings: [] },
         postedReview: {
           id: requestedPr.number,
@@ -241,6 +245,75 @@ test("the first poll drafts two existing requests even if desktop notification f
     expect(result).toMatchObject({ discovered: 2, completed: 2, failed: [] });
     expect(reviewed).toEqual([pr.url, second.url]);
     expect(store.drafts()).toHaveLength(2);
+  } finally {
+    store.close();
+  }
+});
+
+test("poll replaces stale and legacy drafts but skips withdrawn requests", async () => {
+  const store = await ReviewStore.open(await storePath());
+  let current = pr;
+  let requested = true;
+  let reviewCalls = 0;
+  let posted: RemoteReview | undefined = {
+    id: 7,
+    url: `${pr.url}#pullrequestreview-7`,
+    state: "PENDING",
+    baseSha: pr.baseRefOid,
+  };
+  const deps = {
+    load: async () => current,
+    requested: async () => requested,
+    existing: async () => posted,
+    review: async () => {
+      reviewCalls++;
+      posted = {
+        id: 7 + reviewCalls,
+        url: `${pr.url}#pullrequestreview-${7 + reviewCalls}`,
+        state: "PENDING" as const,
+        baseSha: current.baseRefOid,
+      };
+      return {
+        url: pr.url,
+        repository: pr.repository,
+        number: pr.number,
+        head: pr.headRefOid,
+        base: current.baseRefOid,
+        review: { summary: "Ready", findings: [] },
+        postedReview: posted,
+      };
+    },
+  };
+  try {
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(reviewCalls).toBe(0);
+    current = { ...pr, baseRefOid: "c".repeat(40) };
+    requested = false;
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).skipped,
+    ).toBe(1);
+    requested = true;
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(reviewCalls).toBe(1);
+    posted = {
+      id: 9,
+      url: `${pr.url}#pullrequestreview-9`,
+      state: "COMMENTED",
+    };
+    current = { ...pr, baseRefOid: "d".repeat(40) };
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).skipped,
+    ).toBe(1);
+    expect(reviewCalls).toBe(1);
+    posted = { id: 9, url: `${pr.url}#pullrequestreview-9`, state: "PENDING" };
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(reviewCalls).toBe(2);
   } finally {
     store.close();
   }

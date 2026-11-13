@@ -13,6 +13,7 @@ export async function initializeState(path = appPaths().state): Promise<void> {
         repository TEXT NOT NULL,
         pr_number INTEGER NOT NULL,
         head_sha TEXT NOT NULL,
+        base_sha TEXT,
         request_identity TEXT,
         status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
         started_at TEXT,
@@ -30,6 +31,8 @@ export async function initializeState(path = appPaths().state): Promise<void> {
       db.exec("ALTER TABLE reviews ADD COLUMN attempt_id TEXT");
     if (!columns.some((column) => column.name === "review_state"))
       db.exec("ALTER TABLE reviews ADD COLUMN review_state TEXT");
+    if (!columns.some((column) => column.name === "base_sha"))
+      db.exec("ALTER TABLE reviews ADD COLUMN base_sha TEXT");
     db.exec(`
       CREATE TABLE IF NOT EXISTS poll_runs (
         id INTEGER PRIMARY KEY,
@@ -54,6 +57,7 @@ export type ReviewJob = {
   repository: string;
   pr_number: number;
   head_sha: string;
+  base_sha: string | null;
   status: "pending" | "running" | "completed" | "failed";
   started_at: string | null;
   completed_at: string | null;
@@ -90,6 +94,7 @@ export class ReviewStore {
     head: string,
     requestIdentity: string,
     timeoutSeconds: number,
+    baseSha?: string,
   ): { id: number; attemptId: string } | undefined {
     const now = new Date().toISOString();
     const stale = new Date(
@@ -99,10 +104,11 @@ export class ReviewStore {
     const row = this.db
       .query(`
         INSERT INTO reviews
-          (repository, pr_number, head_sha, request_identity, status, started_at, attempt_id)
-        VALUES (?, ?, ?, ?, 'running', ?, ?)
+          (repository, pr_number, head_sha, base_sha, request_identity, status, started_at, attempt_id)
+        VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
         ON CONFLICT (repository, pr_number, head_sha) DO UPDATE SET
           status = 'running',
+          base_sha = excluded.base_sha,
           started_at = excluded.started_at,
           request_identity = excluded.request_identity,
           attempt_id = excluded.attempt_id,
@@ -110,12 +116,15 @@ export class ReviewStore {
           error = NULL
         WHERE reviews.status IN ('pending', 'failed')
           OR (reviews.status = 'running' AND reviews.started_at < ?)
+          OR (reviews.status = 'completed' AND excluded.base_sha IS NOT NULL
+            AND COALESCE(reviews.base_sha, '') != excluded.base_sha)
         RETURNING id
       `)
       .get(
         repository,
         number,
         head,
+        baseSha ?? null,
         requestIdentity,
         now,
         attemptId,
@@ -172,7 +181,7 @@ export class ReviewStore {
   recent(limit = 20): ReviewJob[] {
     return this.db
       .query(
-        "SELECT id, repository, pr_number, head_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews ORDER BY id DESC LIMIT ?",
+        "SELECT id, repository, pr_number, head_sha, base_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews ORDER BY id DESC LIMIT ?",
       )
       .all(limit) as ReviewJob[];
   }
@@ -180,7 +189,7 @@ export class ReviewStore {
   drafts(): ReviewJob[] {
     return this.db
       .query(
-        "SELECT id, repository, pr_number, head_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews WHERE review_state = 'PENDING' ORDER BY id DESC",
+        "SELECT id, repository, pr_number, head_sha, base_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews WHERE review_state = 'PENDING' ORDER BY id DESC",
       )
       .all() as ReviewJob[];
   }
@@ -191,26 +200,42 @@ export class ReviewStore {
     head: string,
     reviewId: number,
     reviewState: "PENDING" | "COMMENTED",
+    baseSha?: string,
   ): void {
     this.db
       .query(`
         INSERT INTO reviews
-          (repository, pr_number, head_sha, status, completed_at, published_review_id, review_state)
-        VALUES (?, ?, ?, 'completed', ?, ?, ?)
+          (repository, pr_number, head_sha, base_sha, status, completed_at, published_review_id, review_state)
+        VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
         ON CONFLICT (repository, pr_number, head_sha) DO UPDATE SET
           status = 'completed', completed_at = excluded.completed_at,
           published_review_id = excluded.published_review_id,
-          review_state = excluded.review_state, error = NULL
+          review_state = excluded.review_state, base_sha = excluded.base_sha, error = NULL
         WHERE reviews.status != 'running'
       `)
       .run(
         repository,
         number,
         head,
+        baseSha ?? null,
         new Date().toISOString(),
         reviewId,
         reviewState,
       );
+  }
+
+  clearDeletedDraft(
+    repository: string,
+    number: number,
+    reviewId: number,
+  ): void {
+    this.db
+      .query(`
+        UPDATE reviews SET published_review_id = NULL, review_state = NULL
+        WHERE repository = ? AND pr_number = ? AND published_review_id = ?
+          AND review_state = 'PENDING'
+      `)
+      .run(repository, number, reviewId);
   }
 
   recoverable(timeoutSeconds: number): string[] {

@@ -95,6 +95,7 @@ test("existing review databases gain the claim token column", async () => {
       .all() as Array<{ name: string }>;
     expect(columns.some(({ name }) => name === "attempt_id")).toBe(true);
     expect(columns.some(({ name }) => name === "review_state")).toBe(true);
+    expect(columns.some(({ name }) => name === "base_sha")).toBe(true);
   } finally {
     migrated.close();
   }
@@ -134,6 +135,31 @@ test("manual drafts are listed and disappear after publication", async () => {
     store.recordPosted("org/repo", 12, "a".repeat(40), 52, "COMMENTED");
     expect(store.drafts()).toEqual([]);
     expect(store.recent()[0]?.review_state).toBe("COMMENTED");
+  } finally {
+    store.close();
+  }
+});
+
+test("a changed base permits a new claim for the same head", async () => {
+  const store = await ReviewStore.open(
+    join(await temporaryPath(), "reviews.sqlite"),
+  );
+  try {
+    const first = store.claim("org/repo", 12, "head", "ryan", 30, "base-1");
+    if (!first) throw new Error("Expected first claim");
+    store.complete(first, 52, "PENDING");
+    expect(
+      store.claim("org/repo", 12, "head", "ryan", 30, "base-1"),
+    ).toBeUndefined();
+    const next = store.claim("org/repo", 12, "head", "ryan", 30, "base-2");
+    if (!next) throw new Error("Expected claim after base change");
+    store.clearDeletedDraft("org/repo", 12, 52);
+    expect(store.drafts()).toEqual([]);
+    store.complete(next, 53, "PENDING");
+    expect(store.drafts()[0]).toMatchObject({
+      base_sha: "base-2",
+      review_id: 53,
+    });
   } finally {
     store.close();
   }

@@ -19,7 +19,15 @@ export type RemoteReview = {
   id: number;
   url: string;
   state: "PENDING" | "COMMENTED";
+  baseSha?: string;
 };
+
+export function reviewIsCurrent(
+  review: RemoteReview,
+  pr: PullRequest,
+): boolean {
+  return review.baseSha === pr.baseRefOid;
+}
 
 const searchResultSchema = z.array(z.object({ url: z.string().url() }));
 const requestedSchema = z.object({
@@ -137,14 +145,31 @@ export async function existingReview(
         review.user.login.toLowerCase() === reviewer.toLowerCase() &&
         review.commit_id === pr.headRefOid &&
         review.body?.startsWith(reviewMarker),
-    );
+    )
+    .map((review) => ({
+      ...review,
+      baseSha:
+        /^RPRR review \(non-approving\)\n<!-- rprr-base:([0-9a-f]{40}) -->\n/.exec(
+          review.body ?? "",
+        )?.[1],
+    }));
   const match =
-    matches.find((review) => review.state === "PENDING") ?? matches[0];
+    matches.find(
+      (review) =>
+        review.state === "PENDING" && review.baseSha === pr.baseRefOid,
+    ) ??
+    matches.find(
+      (review) =>
+        review.state === "COMMENTED" && review.baseSha === pr.baseRefOid,
+    ) ??
+    matches.find((review) => review.state === "PENDING") ??
+    matches[0];
   return match
     ? {
         id: match.id,
         url: match.html_url,
         state: match.state as RemoteReview["state"],
+        ...(match.baseSha ? { baseSha: match.baseSha } : {}),
       }
     : undefined;
 }
@@ -184,7 +209,14 @@ export async function checkoutPullRequest(
     if (base !== pr.baseRefOid)
       throw new Error("PR base changed during checkout; retry review");
     const diff = await run(
-      ["git", "diff", "--no-ext-diff", "--unified=3", base, head, "--"],
+      [
+        "git",
+        "diff",
+        "--no-ext-diff",
+        "--unified=3",
+        `${base}...${head}`,
+        "--",
+      ],
       path,
     );
     if (Buffer.byteLength(diff, "utf8") > 500_000)

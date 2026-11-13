@@ -5,6 +5,7 @@ import {
   loadPullRequest,
   type PullRequest,
   type RemoteReview,
+  reviewIsCurrent,
 } from "./github.ts";
 import { notifyDraft } from "./notify.ts";
 import { reviewPullRequest } from "./review.ts";
@@ -26,12 +27,49 @@ const services: Services = {
   notify: notifyDraft,
 };
 
+async function createDraft(
+  pr: PullRequest,
+  login: string,
+  config: Config,
+  store: ReviewStore,
+  claim: { id: number; attemptId: string },
+  deps: Services,
+): Promise<RemoteReview | undefined> {
+  const result = await deps.review(
+    pr.url,
+    config,
+    "draft",
+    async (observed) => {
+      if (!store.isActive(claim)) throw new Error("Review claim was lost");
+      if (!(await deps.requested(observed, login)))
+        throw new Error("Review request was withdrawn");
+    },
+    async (observed, reviewId) => {
+      store.clearDeletedDraft(observed.repository, observed.number, reviewId);
+    },
+  );
+  return result.postedReview;
+}
+
 export type PollResult = {
   discovered: number;
   completed: number;
   skipped: number;
   failed: Array<{ url: string; error: string }>;
 };
+
+async function shouldProcess(
+  pr: PullRequest,
+  previous: RemoteReview | undefined,
+  login: string,
+  deps: Services,
+): Promise<boolean> {
+  if (pr.state !== "OPEN") return false;
+  if (previous?.state === "COMMENTED" && previous.baseSha === undefined)
+    return false;
+  if (previous && reviewIsCurrent(previous, pr)) return true;
+  return deps.requested(pr, login);
+}
 
 async function processRequest(
   pr: PullRequest,
@@ -41,26 +79,21 @@ async function processRequest(
   deps: Services,
 ): Promise<"completed" | "skipped"> {
   const previous = await deps.existing(pr, login);
-  if (!previous && (pr.state !== "OPEN" || !(await deps.requested(pr, login))))
-    return "skipped";
+  if (!(await shouldProcess(pr, previous, login, deps))) return "skipped";
+  const currentReview = previous && reviewIsCurrent(previous, pr);
   const claim = store.claim(
     pr.repository,
     pr.number,
     pr.headRefOid,
     login,
     config.review.timeoutSeconds,
+    pr.baseRefOid,
   );
   if (!claim) return "skipped";
   try {
     const posted =
-      previous ??
-      (
-        await deps.review(pr.url, config, "draft", async (observed) => {
-          if (!store.isActive(claim)) throw new Error("Review claim was lost");
-          if (!(await deps.requested(observed, login)))
-            throw new Error("Review request was withdrawn");
-        })
-      ).postedReview;
+      (currentReview ? previous : undefined) ??
+      (await createDraft(pr, login, config, store, claim, deps));
     if (!posted) throw new Error("Review was not created");
     store.complete(claim, posted.id, posted.state);
     if (posted.state === "PENDING") {

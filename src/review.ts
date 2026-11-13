@@ -22,11 +22,13 @@ export async function reviewPullRequest(
   config: Config,
   mode: ReviewMode = "draft",
   beforePost?: (pr: PullRequest) => Promise<void>,
+  onDraftDeleted?: (pr: PullRequest, reviewId: number) => Promise<void>,
 ): Promise<{
   url: string;
   repository: string;
   number: number;
   head: string;
+  base: string;
   review: Review;
   postedReview?: RemoteReview;
 }> {
@@ -54,13 +56,20 @@ export async function reviewPullRequest(
     if (mode !== "dry-run") await beforePost?.(pr);
     const postedReview =
       mode !== "dry-run"
-        ? await postReview(pr, review, checkout.diff, mode === "publish")
+        ? await postReview(
+            pr,
+            review,
+            checkout.diff,
+            mode === "publish",
+            (reviewId) => onDraftDeleted?.(pr, reviewId) ?? Promise.resolve(),
+          )
         : undefined;
     return {
       url: pr.url,
       repository: pr.repository,
       number: pr.number,
       head: pr.headRefOid,
+      base: pr.baseRefOid,
       review,
       ...(postedReview ? { postedReview } : {}),
     };
