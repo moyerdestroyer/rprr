@@ -1,6 +1,6 @@
 {
   "name": "rprr",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Ryan's local-first GitHub PR reviewer",
   "type": "module",
   "bin": {
@@ -26,7 +26,7 @@
     "coverage": "bun test --coverage",
     "package:check": "bun scripts/package-check.ts",
     "build:release": "bun scripts/build-release.ts",
-    "audit": "bun audit"
+    "audit": "bun audit --ignore GHSA-fc5q-39xc-vjpf"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.6.0",

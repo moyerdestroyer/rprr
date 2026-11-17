@@ -24,6 +24,8 @@ jobs:
         run: bun ci
       - name: Run local quality gate
         run: bun run check
+      # knip depends on picomatch <=4.0.7 (GHSA-fc5q-39xc-vjpf). No patched
+      # release exists, and picomatch is not part of the release binary.
       - name: Audit locked dependencies
         run: bun run audit
       - name: Check packed installation
