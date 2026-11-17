@@ -3,7 +3,6 @@ import { addedLines } from "../src/diff.ts";
 import { diffScope } from "../src/diff-scope.ts";
 import {
   planReview,
-  ReviewLimitError,
   reviewBudgetKey,
   reviewByteBudget,
 } from "../src/review-plan.ts";
@@ -19,10 +18,13 @@ const first = `@@ -1 +1 @@\n-old\n+${"a".repeat(60)}\n`;
 const second = `@@ -20 +20 @@\n-old\n+${"b".repeat(60)}\n`;
 
 test("large files split at hunk boundaries with original line numbers", () => {
-  const chunks = planReview(header + first + second, config);
-  expect(chunks).toEqual([header + first, header + second]);
-  expect(chunks.every((chunk) => Buffer.byteLength(chunk) <= 200)).toBe(true);
-  expect([...(addedLines(chunks.join("")).get("code.ts") ?? [])]).toEqual([
+  const plan = planReview(header + first + second, config);
+  expect(plan.omittedFiles).toEqual([]);
+  expect(plan.chunks).toEqual([header + first, header + second]);
+  expect(plan.chunks.every((chunk) => Buffer.byteLength(chunk) <= 200)).toBe(
+    true,
+  );
+  expect([...(addedLines(plan.chunks.join("")).get("code.ts") ?? [])]).toEqual([
     1, 20,
   ]);
 });
@@ -33,25 +35,32 @@ test("whole files pack together without dropping binary or deletion sections", (
   const deleted =
     "diff --git a/old.ts b/old.ts\n--- a/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-old\n";
   const diff = header + first + binary + deleted;
-  expect(planReview(diff, { ...config, maxDiffBytes: 250 }).join("")).toBe(
-    diff,
-  );
-  expect(planReview("", config)).toEqual([]);
+  expect(
+    planReview(diff, { ...config, maxDiffBytes: 250 }).chunks.join(""),
+  ).toBe(diff);
+  expect(planReview("", config)).toEqual({ chunks: [], omittedFiles: [] });
 });
 
-test("oversized hunks and chunk counts block instead of truncating", () => {
-  expect(() =>
-    planReview(header + first + second, { ...config, maxChunks: 1 }),
-  ).toThrow("review.maxChunks");
-  expect(() =>
-    planReview(header + first, { ...config, maxDiffBytes: 100 }),
-  ).toThrow(ReviewLimitError);
-  expect(() => planReview(header + "x".repeat(300), config)).toThrow(
-    "file header",
+test("oversized files are omitted and smaller files still pack", () => {
+  const small = "diff --git a/small.ts b/small.ts\n+ok\n";
+  const packed = planReview(header + first + second + small, {
+    ...config,
+    maxChunks: 1,
+  });
+  expect(packed.omittedFiles).toEqual(["code.ts"]);
+  expect(packed.chunks).toEqual([small]);
+  const wide = planReview(header + first, { ...config, maxDiffBytes: 100 });
+  expect(wide.omittedFiles).toEqual(["code.ts"]);
+  expect(wide.chunks).toEqual([]);
+  expect(planReview(header + "x".repeat(300), config).omittedFiles).toEqual([
+    "code.ts",
+  ]);
+  const emoji = planReview(
+    header + first.replace("a".repeat(60), "💡".repeat(60)),
+    config,
   );
-  expect(() =>
-    planReview(header + first.replace("a".repeat(60), "💡".repeat(60)), config),
-  ).toThrow("review.maxDiffBytes");
+  expect(emoji.omittedFiles).toEqual(["code.ts"]);
+  expect(emoji.chunks).toEqual([]);
 });
 
 test("retry keys depend on review budgets and exclusions, not unrelated settings", () => {

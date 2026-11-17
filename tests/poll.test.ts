@@ -93,6 +93,31 @@ test("oversized reviews stay blocked until inputs change or a remote draft is re
   }
 });
 
+test("a review that omits files completes instead of staying blocked", async () => {
+  const store = await ReviewStore.open(await storePath());
+  const deps = {
+    load: async () => pr,
+    requested: async () => true,
+    existing: async () => undefined,
+    review: async () => ({
+      postedReview: {
+        id: 7,
+        url: `${pr.url}#pullrequestreview-7`,
+        state: "PENDING" as const,
+        baseSha: pr.baseRefOid,
+      },
+    }),
+  };
+  try {
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).completed,
+    ).toBe(1);
+    expect(store.recent()[0]?.status).toBe("completed");
+  } finally {
+    store.close();
+  }
+});
+
 test("claims each head once, retries failures, and recovers posted reviews", async () => {
   const path = await storePath();
   const store = await ReviewStore.open(path);

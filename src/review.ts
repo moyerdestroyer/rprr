@@ -6,30 +6,18 @@ import {
   type PullRequest,
   type RemoteReview,
 } from "./github.ts";
-import { ProcessOutputLimitError } from "./process.ts";
 import { reviewInstructions } from "./prompt.ts";
 import { postReview } from "./publish.ts";
 import { reviewChunks } from "./review-chunks.ts";
-import {
-  planReview,
-  ReviewLimitError,
-  reviewByteBudget,
-} from "./review-plan.ts";
+import { planReview } from "./review-plan.ts";
 
 async function checkoutForReview(pr: PullRequest, config: Config) {
-  const byteBudget = reviewByteBudget(config.review);
-  try {
-    return await checkoutPullRequest(
-      pr,
-      config.review.excludePaths,
-      byteBudget,
-    );
-  } catch (error) {
-    if (!(error instanceof ProcessOutputLimitError)) throw error;
-    throw new ReviewLimitError(
-      `PR diff exceeds the review budget of ${byteBudget} bytes. Increase review.maxDiffBytes or review.maxChunks, or configure review.excludePaths; no review was posted.`,
-    );
-  }
+  return checkoutPullRequest(
+    pr,
+    config.review.excludePaths,
+    config.review.maxDiffBytes ?? 500_000,
+    config.review.timeoutSeconds * 1000,
+  );
 }
 
 export type ReviewMode = "draft" | "publish" | "dry-run";
@@ -47,18 +35,24 @@ export async function reviewPullRequest(
   head: string;
   base: string;
   review: Review;
-  coverage: { changedFiles: string[]; excludedFiles: string[]; chunks: number };
+  coverage: {
+    changedFiles: string[];
+    excludedFiles: string[];
+    omittedFiles: string[];
+    chunks: number;
+  };
   postedReview?: RemoteReview;
 }> {
   const pr = await loadPullRequest(selector);
   const checkout = await checkoutForReview(pr, config);
   try {
-    const chunks = planReview(checkout.diff, config.review);
+    const plan = planReview(checkout.diff, config.review);
+    const omittedFiles = [...checkout.omittedFiles, ...plan.omittedFiles];
     const instructions = await reviewInstructions(config);
     const review = await reviewChunks(
       pr,
-      checkout,
-      chunks,
+      { ...checkout, omittedFiles },
+      plan.chunks,
       config,
       instructions.text,
     );
@@ -83,7 +77,8 @@ export async function reviewPullRequest(
       coverage: {
         changedFiles: checkout.changedFiles,
         excludedFiles: checkout.excludedFiles,
-        chunks: chunks.length,
+        omittedFiles,
+        chunks: plan.chunks.length,
       },
       ...(postedReview ? { postedReview } : {}),
     };

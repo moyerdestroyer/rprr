@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { DiffCollector } from "./diff-collect.ts";
 import { diffScope } from "./diff-scope.ts";
 import { runCommand } from "./process.ts";
 
@@ -48,8 +49,12 @@ const remoteReviewsSchema = z.array(
   ),
 );
 
-async function run(command: string[], cwd?: string): Promise<string> {
-  return (await runCommand(command, cwd)).trim();
+async function run(
+  command: string[],
+  cwd?: string,
+  timeoutMs?: number,
+): Promise<string> {
+  return (await runCommand(command, cwd, timeoutMs)).trim();
 }
 
 export async function loadPullRequest(selector: string): Promise<PullRequest> {
@@ -164,27 +169,33 @@ export async function existingReview(
 export async function checkoutPullRequest(
   pr: PullRequest,
   excludePaths: string[] = [],
-  maxDiffBytes = Number.POSITIVE_INFINITY,
+  maxFileBytes = Number.POSITIVE_INFINITY,
+  timeoutMs = 120_000,
 ): Promise<{
   path: string;
   diff: string;
   changedFiles: string[];
   excludedFiles: string[];
+  omittedFiles: string[];
   cleanup: () => Promise<void>;
 }> {
   const root = await mkdtemp(join(tmpdir(), "rprr-review-"));
   const path = join(root, "repo");
   try {
-    await run([
-      "gh",
-      "repo",
-      "clone",
-      pr.repository,
-      path,
-      "--",
-      "--filter=blob:none",
-      "--no-checkout",
-    ]);
+    await run(
+      [
+        "gh",
+        "repo",
+        "clone",
+        pr.repository,
+        path,
+        "--",
+        "--filter=blob:none",
+        "--no-checkout",
+      ],
+      undefined,
+      timeoutMs,
+    );
     await run(
       [
         "gh",
@@ -200,7 +211,7 @@ export async function checkoutPullRequest(
     const head = await run(["git", "rev-parse", "HEAD"], path);
     if (head !== pr.headRefOid)
       throw new Error("PR head changed during checkout; retry review");
-    await run(["git", "fetch", "origin", pr.baseRefOid], path);
+    await run(["git", "fetch", "origin", pr.baseRefOid], path, timeoutMs);
     const base = await run(["git", "rev-parse", "FETCH_HEAD"], path);
     if (base !== pr.baseRefOid)
       throw new Error("PR base changed during checkout; retry review");
@@ -216,38 +227,40 @@ export async function checkoutPullRequest(
         "--",
       ],
       path,
+      timeoutMs,
     );
     const { changedFiles, excludedFiles, excludedPaths } = diffScope(
       names,
       excludePaths,
     );
-    const diff = await runCommand(
-      [
-        "git",
-        "-c",
-        "core.quotePath=false",
-        "diff",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-color",
-        "--find-renames",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-        "--unified=3",
-        comparison,
-        "--",
-        ".",
-        ...excludedPaths.map((file) => `:(top,literal,exclude)${file}`),
-      ],
-      path,
-      undefined,
-      maxDiffBytes,
+    const collector = new DiffCollector(maxFileBytes);
+    const diffCommand = [
+      "git",
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--find-renames",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      "--unified=3",
+      comparison,
+      "--",
+      ".",
+      ...excludedPaths.map((file) => `:(top,literal,exclude)${file}`),
+    ];
+    await runCommand(diffCommand, path, timeoutMs, undefined, (chunk) =>
+      collector.push(chunk),
     );
+    const { diff, omittedFiles } = collector.finish();
     return {
       path,
       diff,
       changedFiles,
       excludedFiles,
+      omittedFiles,
       cleanup: () => rm(root, { recursive: true, force: true }),
     };
   } catch (error) {

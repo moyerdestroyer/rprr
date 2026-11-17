@@ -139,6 +139,54 @@ test("fully excluded changes report zero coverage without launching an agent", a
   expect(result.findings).toEqual([]);
 });
 
+test("a context limit splits the chunk and a single rejected file is omitted", async () => {
+  const other =
+    "diff --git a/other.ts b/other.ts\n--- a/other.ts\n+++ b/other.ts\n@@ -1 +1 @@\n-old\n+kept\n";
+  const work = await checkout();
+  await writeFile(join(work.path, "other.ts"), "kept\n");
+  let calls = 0;
+  const split = await reviewChunks(
+    pr,
+    work,
+    [diff + other],
+    config,
+    "Review",
+    async () => {
+      calls++;
+      if (calls === 1)
+        throw new Error(
+          "The prompt exceeds the context window this endpoint can start from.",
+        );
+      return JSON.stringify({
+        summary: "Clear",
+        findings: [
+          { ...finding, ...(calls === 3 ? { file: "other.ts" } : {}) },
+        ],
+      });
+    },
+    async () => {},
+  );
+  expect(calls).toBe(3);
+  expect(split.findings).toHaveLength(1);
+  expect(split.summary).not.toContain("agent rejected");
+
+  const single = await reviewChunks(
+    pr,
+    work,
+    [diff],
+    config,
+    "Review",
+    async () => {
+      throw new Error("prompt exceeds the context window");
+    },
+    async () => {},
+  );
+  expect(single.findings).toEqual([]);
+  expect(single.summary).toContain("code.ts");
+  expect(single.summary).toContain("agent rejected the prompt size");
+  expect(single.summary).toContain("0/2 changed files included in 1 chunk(s)");
+});
+
 test("a depleted deadline stops before another chunk", async () => {
   let calls = 0;
   await expect(

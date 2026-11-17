@@ -66,6 +66,7 @@ export async function runCommand(
   cwd?: string,
   timeoutMs = 120_000,
   maxOutputBytes = Number.POSITIVE_INFINITY,
+  onStdout?: (chunk: string) => void,
 ): Promise<string> {
   const executable = command[0];
   if (!executable) throw new Error("Command is empty");
@@ -84,6 +85,10 @@ export async function runCommand(
         const output = { text: "", bytes: 0 };
         let stderr = "";
         child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+          if (onStdout) {
+            onStdout(chunk);
+            return;
+          }
           try {
             takeOutput(output, chunk, maxOutputBytes, label);
           } catch (error) {
