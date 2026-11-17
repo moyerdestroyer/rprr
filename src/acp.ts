@@ -4,6 +4,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { configuredAgentCommand } from "./agent-command.ts";
 import type { Config } from "./config.ts";
 import { parseReview } from "./findings.ts";
+import { ProcessTimeoutError, withProcessTimeout } from "./process.ts";
 import { reviewSkill } from "./prompt.ts";
 
 export type AdvertisedCommand = { name: string; description: string };
@@ -150,32 +151,29 @@ async function withAgent<T>(
   const child = spawn(configuredAgentCommand(config.command), config.args, {
     cwd,
     env: agentEnvironment(config),
+    detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "pipe"],
   });
   if (!child.stderr) throw new Error("Could not start ACP agent");
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, timeoutSeconds * 1000);
   let stderr = "";
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
     stderr = (stderr + chunk).slice(-4000);
   });
   try {
-    return await body(child);
+    return await withProcessTimeout(
+      child,
+      timeoutSeconds * 1000,
+      "ACP agent",
+      () => body(child),
+    );
   } catch (error) {
-    if (timedOut)
-      throw new Error(`ACP agent timed out after ${timeoutSeconds}s`);
+    if (error instanceof ProcessTimeoutError) throw error;
     if (stderr.trim()) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`${detail}\n${stderr.trim()}`, { cause: error });
     }
     throw error;
-  } finally {
-    clearTimeout(timer);
-    child.kill("SIGKILL");
   }
 }
 

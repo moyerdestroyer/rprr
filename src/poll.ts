@@ -9,13 +9,18 @@ import {
 } from "./github.ts";
 import { notifyDraft } from "./notify.ts";
 import { reviewPullRequest } from "./review.ts";
+import { ReviewLimitError, reviewBudgetKey } from "./review-plan.ts";
 import type { ReviewStore } from "./state.ts";
 
 type Services = {
   load: typeof loadPullRequest;
   requested: typeof isReviewRequested;
   existing: typeof existingReview;
-  review: typeof reviewPullRequest;
+  review: (
+    ...args: Parameters<typeof reviewPullRequest>
+  ) => Promise<
+    Pick<Awaited<ReturnType<typeof reviewPullRequest>>, "postedReview">
+  >;
   notify?: (pr: PullRequest, review: RemoteReview) => Promise<void>;
 };
 
@@ -81,6 +86,7 @@ async function processRequest(
   const previous = await deps.existing(pr, login);
   if (!(await shouldProcess(pr, previous, login, deps))) return "skipped";
   const currentReview = previous && reviewIsCurrent(previous, pr);
+  const retryKey = reviewBudgetKey(config.review);
   const claim = store.claim(
     pr.repository,
     pr.number,
@@ -88,6 +94,7 @@ async function processRequest(
     login,
     config.review.timeoutSeconds,
     pr.baseRefOid,
+    currentReview ? undefined : retryKey,
   );
   if (!claim) return "skipped";
   try {
@@ -105,7 +112,11 @@ async function processRequest(
     }
     return "completed";
   } catch (error) {
-    store.fail(claim, error instanceof Error ? error.message : String(error));
+    store.fail(
+      claim,
+      error instanceof Error ? error.message : String(error),
+      error instanceof ReviewLimitError ? retryKey : undefined,
+    );
     throw error;
   }
 }

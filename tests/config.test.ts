@@ -96,9 +96,31 @@ test("existing review databases gain the claim token column", async () => {
     expect(columns.some(({ name }) => name === "attempt_id")).toBe(true);
     expect(columns.some(({ name }) => name === "review_state")).toBe(true);
     expect(columns.some(({ name }) => name === "base_sha")).toBe(true);
+    expect(columns.some(({ name }) => name === "blocked_key")).toBe(true);
   } finally {
     migrated.close();
   }
+});
+
+test("review budgets and exclusion patterns are validated", () => {
+  const review = {
+    ...sampleConfig.review,
+    maxDiffBytes: 1_000_000,
+    maxChunks: 10,
+    excludePaths: ["**/*.map"],
+  };
+  expect(validateConfig({ ...sampleConfig, review }).review).toEqual(review);
+  for (const invalid of [
+    { maxDiffBytes: 0 },
+    { maxDiffBytes: 6_000_000 },
+    { maxChunks: 0 },
+    { maxChunks: 101 },
+    { excludePaths: [""] },
+    { excludePaths: "*.map" },
+  ])
+    expect(() =>
+      validateConfig({ ...sampleConfig, review: { ...review, ...invalid } }),
+    ).toThrow();
 });
 
 test("poll runs record success and failure for health reporting", async () => {

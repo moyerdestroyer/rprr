@@ -73,7 +73,11 @@ Example configuration:
     "args": ["acp"]
   },
   "github": { "trigger": "review-request" },
-  "review": { "timeoutSeconds": 900, "maxFindings": 20 }
+  "review": {
+    "timeoutSeconds": 900,
+    "maxFindings": 20,
+    "excludePaths": ["**/*.map", "**/dist/**"]
+  }
 }
 ```
 
@@ -89,6 +93,8 @@ Mutable data follows XDG paths. `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, and `XDG_CA
 Polling finds open PRs that currently request a review from the signed-in `gh` user, including requests made before RPRR was installed. It creates a pending GitHub review, with draft inline comments, for each new PR head. A pending review is not submitted publicly until you run `rprr review PR --publish` or submit it on GitHub. `--publish` also posts a new review directly when no draft exists; it never approves or requests changes. Before posting, RPRR rechecks the PR head and base and validates inline locations. Polling records one claim per repository, PR, and head in SQLite, retries failures, and reconciles reviews after interrupted runs. It handles direct requests, not team review requests.
 
 Reviews use the PR's three-dot diff, so updates to the base branch do not appear as changes introduced by the PR. RPRR records the reviewed base commit in new drafts. If the base changes, it generates and validates a fresh review before replacing its pending draft. Older RPRR drafts without base metadata are refreshed once. Replacement removes edits made to that pending draft on GitHub; submitted reviews are not deleted. A failed replacement can be retried with `rprr review` or the next poll.
+
+Diffs are reviewed in chunks of at most `review.maxDiffBytes` (default 500000), with at most `review.maxChunks` chunks (default 20). `review.excludePaths` takes glob patterns; matching files are left out of the diff and named in the review summary. A diff that still cannot fit is not reviewed. Polling keeps that result blocked until the PR head, base, or those review settings change. `rprr review` tries the same PR again immediately. Other failures stay retryable.
 
 GitHub sends the reviewer its usual review-request notification. After RPRR creates a draft, it attempts a local desktop notification with the RPRR mascot icon via `notify-send` when available. A background timer or cron job may run without a desktop notification session, so the toast is best effort. `rprr drafts` and `rprr status` show locally tracked drafts even if no toast appears. `rprr poll` runs one pass immediately; the timer checks every 15 minutes.
 

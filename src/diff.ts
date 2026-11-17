@@ -18,9 +18,18 @@ function filePath(
   line: string,
   files: Map<string, Set<number>>,
 ): string | undefined {
-  const target = line.slice(4);
+  const raw = line.slice(4).replace(/\t$/, "");
+  const target: string = raw.startsWith('"')
+    ? JSON.parse(
+        raw.replace(
+          /\\([0-7]{1,3})/g,
+          (_match, octal: string) =>
+            `\\u${Number.parseInt(octal, 8).toString(16).padStart(4, "0")}`,
+        ),
+      )
+    : raw;
   const path = target.startsWith("b/") ? target.slice(2) : undefined;
-  if (path) files.set(path, new Set());
+  if (path && !files.has(path)) files.set(path, new Set());
   return path;
 }
 

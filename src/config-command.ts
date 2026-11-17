@@ -22,12 +22,20 @@ function redacted(config: Config): Config {
 }
 
 function valueFor(key: string, raw: string): unknown {
-  if (key === "review.timeoutSeconds" || key === "review.maxFindings") {
+  if (
+    [
+      "review.timeoutSeconds",
+      "review.maxFindings",
+      "review.maxDiffBytes",
+      "review.maxChunks",
+    ].includes(key)
+  ) {
     if (!/^[1-9]\d*$/.test(raw))
       throw new Error(`${key} must be a positive integer`);
     return Number(raw);
   }
-  if (key === "agent.args") return JSON.parse(raw);
+  if (key === "agent.args" || key === "review.excludePaths")
+    return JSON.parse(raw);
   if (key === "agent.command" || key === "review.promptFile") return raw;
   if (key === "review.skill") return reviewSkill(raw);
   throw new Error(`Unsupported config key: ${key}`);

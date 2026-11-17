@@ -33,6 +33,8 @@ export async function initializeState(path = appPaths().state): Promise<void> {
       db.exec("ALTER TABLE reviews ADD COLUMN review_state TEXT");
     if (!columns.some((column) => column.name === "base_sha"))
       db.exec("ALTER TABLE reviews ADD COLUMN base_sha TEXT");
+    if (!columns.some((column) => column.name === "blocked_key"))
+      db.exec("ALTER TABLE reviews ADD COLUMN blocked_key TEXT");
     db.exec(`
       CREATE TABLE IF NOT EXISTS poll_runs (
         id INTEGER PRIMARY KEY,
@@ -58,7 +60,7 @@ export type ReviewJob = {
   pr_number: number;
   head_sha: string;
   base_sha: string | null;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "blocked";
   started_at: string | null;
   completed_at: string | null;
   review_id: number | null;
@@ -95,6 +97,7 @@ export class ReviewStore {
     requestIdentity: string,
     timeoutSeconds: number,
     baseSha?: string,
+    retryKey?: string,
   ): { id: number; attemptId: string } | undefined {
     const now = new Date().toISOString();
     const stale = new Date(
@@ -113,8 +116,12 @@ export class ReviewStore {
           request_identity = excluded.request_identity,
           attempt_id = excluded.attempt_id,
           completed_at = NULL,
-          error = NULL
-        WHERE reviews.status IN ('pending', 'failed')
+          error = NULL,
+          blocked_key = NULL
+        WHERE reviews.status = 'pending'
+          OR (reviews.status = 'failed' AND (reviews.blocked_key IS NULL
+            OR ? IS NULL OR reviews.blocked_key != ?
+            OR COALESCE(reviews.base_sha, '') != COALESCE(excluded.base_sha, '')))
           OR (reviews.status = 'running' AND reviews.started_at < ?)
           OR (reviews.status = 'completed' AND excluded.base_sha IS NOT NULL
             AND COALESCE(reviews.base_sha, '') != excluded.base_sha)
@@ -128,6 +135,8 @@ export class ReviewStore {
         requestIdentity,
         now,
         attemptId,
+        retryKey ?? null,
+        retryKey ?? null,
         stale,
       ) as { id: number } | null;
     return row ? { id: row.id, attemptId } : undefined;
@@ -150,7 +159,7 @@ export class ReviewStore {
     const result = this.db
       .query(`
         UPDATE reviews SET status = 'completed', completed_at = ?,
-          published_review_id = ?, review_state = ?, error = NULL
+          published_review_id = ?, review_state = ?, error = NULL, blocked_key = NULL
         WHERE id = ? AND attempt_id = ? AND status = 'running'
       `)
       .run(
@@ -164,15 +173,20 @@ export class ReviewStore {
       throw new Error("Review claim was lost before completion");
   }
 
-  fail(claim: { id: number; attemptId: string }, error: string): void {
+  fail(
+    claim: { id: number; attemptId: string },
+    error: string,
+    blockedKey?: string,
+  ): void {
     this.db
       .query(`
-        UPDATE reviews SET status = 'failed', completed_at = ?, error = ?
+        UPDATE reviews SET status = 'failed', completed_at = ?, error = ?, blocked_key = ?
         WHERE id = ? AND attempt_id = ? AND status = 'running'
       `)
       .run(
         new Date().toISOString(),
         error.slice(0, 4000),
+        blockedKey ?? null,
         claim.id,
         claim.attemptId,
       );
@@ -181,7 +195,7 @@ export class ReviewStore {
   recent(limit = 20): ReviewJob[] {
     return this.db
       .query(
-        "SELECT id, repository, pr_number, head_sha, base_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews ORDER BY id DESC LIMIT ?",
+        "SELECT id, repository, pr_number, head_sha, base_sha, CASE WHEN blocked_key IS NOT NULL THEN 'blocked' ELSE status END AS status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews ORDER BY id DESC LIMIT ?",
       )
       .all(limit) as ReviewJob[];
   }
@@ -189,7 +203,7 @@ export class ReviewStore {
   drafts(): ReviewJob[] {
     return this.db
       .query(
-        "SELECT id, repository, pr_number, head_sha, base_sha, status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews WHERE review_state = 'PENDING' ORDER BY id DESC",
+        "SELECT id, repository, pr_number, head_sha, base_sha, CASE WHEN blocked_key IS NOT NULL THEN 'blocked' ELSE status END AS status, started_at, completed_at, published_review_id AS review_id, review_state, error FROM reviews WHERE review_state = 'PENDING' ORDER BY id DESC",
       )
       .all() as ReviewJob[];
   }
@@ -210,7 +224,7 @@ export class ReviewStore {
         ON CONFLICT (repository, pr_number, head_sha) DO UPDATE SET
           status = 'completed', completed_at = excluded.completed_at,
           published_review_id = excluded.published_review_id,
-          review_state = excluded.review_state, base_sha = excluded.base_sha, error = NULL
+          review_state = excluded.review_state, base_sha = excluded.base_sha, error = NULL, blocked_key = NULL
         WHERE reviews.status != 'running'
       `)
       .run(

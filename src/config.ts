@@ -24,6 +24,9 @@ const configSchema = z.strictObject({
       publish: z.boolean().optional(),
       timeoutSeconds: z.number().int().positive(),
       maxFindings: z.number().int().positive(),
+      maxDiffBytes: z.number().int().min(1000).max(5_000_000).optional(),
+      maxChunks: z.number().int().min(1).max(100).optional(),
+      excludePaths: z.array(z.string().min(1).max(1000)).max(100).optional(),
       promptFile: z.string().min(1).optional(),
       skill: z.string().min(1).optional(),
     })

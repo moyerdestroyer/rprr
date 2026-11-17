@@ -2,6 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { diffScope } from "./diff-scope.ts";
+import { runCommand } from "./process.ts";
 
 const prSchema = z.object({
   url: z.string().url(),
@@ -47,22 +49,7 @@ const remoteReviewsSchema = z.array(
 );
 
 async function run(command: string[], cwd?: string): Promise<string> {
-  const process = Bun.spawn(command, { cwd, stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => process.kill(), 120_000);
-  try {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
-      process.exited,
-    ]);
-    if (exitCode !== 0)
-      throw new Error(
-        `${command[0]} failed: ${stderr.trim() || stdout.trim()}`,
-      );
-    return stdout.trim();
-  } finally {
-    clearTimeout(timer);
-  }
+  return (await runCommand(command, cwd)).trim();
 }
 
 export async function loadPullRequest(selector: string): Promise<PullRequest> {
@@ -176,7 +163,15 @@ export async function existingReview(
 
 export async function checkoutPullRequest(
   pr: PullRequest,
-): Promise<{ path: string; diff: string; cleanup: () => Promise<void> }> {
+  excludePaths: string[] = [],
+  maxDiffBytes = Number.POSITIVE_INFINITY,
+): Promise<{
+  path: string;
+  diff: string;
+  changedFiles: string[];
+  excludedFiles: string[];
+  cleanup: () => Promise<void>;
+}> {
   const root = await mkdtemp(join(tmpdir(), "rprr-review-"));
   const path = join(root, "repo");
   try {
@@ -188,6 +183,7 @@ export async function checkoutPullRequest(
       path,
       "--",
       "--filter=blob:none",
+      "--no-checkout",
     ]);
     await run(
       [
@@ -208,22 +204,50 @@ export async function checkoutPullRequest(
     const base = await run(["git", "rev-parse", "FETCH_HEAD"], path);
     if (base !== pr.baseRefOid)
       throw new Error("PR base changed during checkout; retry review");
-    const diff = await run(
+    const comparison = `${base}...${head}`;
+    const names = await runCommand(
       [
         "git",
         "diff",
-        "--no-ext-diff",
-        "--unified=3",
-        `${base}...${head}`,
+        "--find-renames",
+        "--name-status",
+        "-z",
+        comparison,
         "--",
       ],
       path,
     );
-    if (Buffer.byteLength(diff, "utf8") > 500_000)
-      throw new Error("PR diff exceeds the 500 KB review limit");
+    const { changedFiles, excludedFiles, excludedPaths } = diffScope(
+      names,
+      excludePaths,
+    );
+    const diff = await runCommand(
+      [
+        "git",
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--find-renames",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--unified=3",
+        comparison,
+        "--",
+        ".",
+        ...excludedPaths.map((file) => `:(top,literal,exclude)${file}`),
+      ],
+      path,
+      undefined,
+      maxDiffBytes,
+    );
     return {
       path,
       diff,
+      changedFiles,
+      excludedFiles,
       cleanup: () => rm(root, { recursive: true, force: true }),
     };
   } catch (error) {

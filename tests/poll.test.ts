@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import type { PullRequest, RemoteReview } from "../src/github.ts";
 import { pollRequested } from "../src/poll.ts";
+import { ReviewLimitError } from "../src/review-plan.ts";
 import { ReviewStore } from "../src/state.ts";
 
 const directories: string[] = [];
@@ -40,6 +41,57 @@ const pr: PullRequest = {
   headRefOid: "a".repeat(40),
   baseRefOid: "b".repeat(40),
 };
+
+test("oversized reviews stay blocked until inputs change or a remote draft is recovered", async () => {
+  const store = await ReviewStore.open(await storePath());
+  let current = pr;
+  let calls = 0;
+  let posted: RemoteReview | undefined;
+  const deps = {
+    load: async () => current,
+    requested: async () => true,
+    existing: async () => posted,
+    review: async () => {
+      calls++;
+      throw new ReviewLimitError("Too large");
+    },
+  };
+  try {
+    expect(
+      (await pollRequested([pr.url], "ryan", config, store, deps)).failed,
+    ).toHaveLength(1);
+    expect(store.recent()[0]?.status).toBe("blocked");
+    expect((await pollRequested([], "ryan", config, store, deps)).skipped).toBe(
+      1,
+    );
+    expect(calls).toBe(1);
+    current = { ...pr, baseRefOid: "c".repeat(40) };
+    await pollRequested([], "ryan", config, store, deps);
+    expect(calls).toBe(2);
+    current = { ...current, headRefOid: "d".repeat(40) };
+    await pollRequested([pr.url], "ryan", config, store, deps);
+    expect(calls).toBe(3);
+    const changed = {
+      ...config,
+      review: { ...config.review, excludePaths: ["**/*.map"] },
+    };
+    await pollRequested([], "ryan", changed, store, deps);
+    expect(calls).toBe(4);
+    posted = {
+      id: 42,
+      url: pr.url,
+      state: "PENDING",
+      baseSha: current.baseRefOid,
+    };
+    expect(
+      (await pollRequested([], "ryan", changed, store, deps)).completed,
+    ).toBe(1);
+    expect(store.recent()[0]?.status).toBe("completed");
+    expect(calls).toBe(4);
+  } finally {
+    store.close();
+  }
+});
 
 test("claims each head once, retries failures, and recovers posted reviews", async () => {
   const path = await storePath();

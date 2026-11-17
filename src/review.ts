@@ -1,19 +1,36 @@
-import { runAgent } from "./acp.ts";
 import type { Config } from "./config.ts";
-import {
-  parseReview,
-  type Review,
-  validateFindingLocations,
-} from "./findings.ts";
+import type { Review } from "./findings.ts";
 import {
   checkoutPullRequest,
   loadPullRequest,
   type PullRequest,
   type RemoteReview,
-  restoreCheckout,
 } from "./github.ts";
-import { composeReviewPrompt, reviewInstructions } from "./prompt.ts";
+import { ProcessOutputLimitError } from "./process.ts";
+import { reviewInstructions } from "./prompt.ts";
 import { postReview } from "./publish.ts";
+import { reviewChunks } from "./review-chunks.ts";
+import {
+  planReview,
+  ReviewLimitError,
+  reviewByteBudget,
+} from "./review-plan.ts";
+
+async function checkoutForReview(pr: PullRequest, config: Config) {
+  const byteBudget = reviewByteBudget(config.review);
+  try {
+    return await checkoutPullRequest(
+      pr,
+      config.review.excludePaths,
+      byteBudget,
+    );
+  } catch (error) {
+    if (!(error instanceof ProcessOutputLimitError)) throw error;
+    throw new ReviewLimitError(
+      `PR diff exceeds the review budget of ${byteBudget} bytes. Increase review.maxDiffBytes or review.maxChunks, or configure review.excludePaths; no review was posted.`,
+    );
+  }
+}
 
 export type ReviewMode = "draft" | "publish" | "dry-run";
 
@@ -30,29 +47,21 @@ export async function reviewPullRequest(
   head: string;
   base: string;
   review: Review;
+  coverage: { changedFiles: string[]; excludedFiles: string[]; chunks: number };
   postedReview?: RemoteReview;
 }> {
   const pr = await loadPullRequest(selector);
-  const checkout = await checkoutPullRequest(pr);
+  const checkout = await checkoutForReview(pr, config);
   try {
-    const context = JSON.stringify({
-      url: pr.url,
-      title: pr.title,
-      description: pr.body ?? "",
-      head: pr.headRefOid,
-      diff: checkout.diff,
-    });
+    const chunks = planReview(checkout.diff, config.review);
     const instructions = await reviewInstructions(config);
-    const output = await runAgent(
-      config.agent,
-      checkout.path,
-      composeReviewPrompt(instructions.text, context),
-      config.review.timeoutSeconds,
-      config.review.skill,
+    const review = await reviewChunks(
+      pr,
+      checkout,
+      chunks,
+      config,
+      instructions.text,
     );
-    await restoreCheckout(checkout.path, pr.headRefOid);
-    const review = parseReview(output, config.review.maxFindings);
-    await validateFindingLocations(review, checkout.path);
     if (mode !== "dry-run") await beforePost?.(pr);
     const postedReview =
       mode !== "dry-run"
@@ -71,6 +80,11 @@ export async function reviewPullRequest(
       head: pr.headRefOid,
       base: pr.baseRefOid,
       review,
+      coverage: {
+        changedFiles: checkout.changedFiles,
+        excludedFiles: checkout.excludedFiles,
+        chunks: chunks.length,
+      },
       ...(postedReview ? { postedReview } : {}),
     };
   } finally {
