@@ -80,22 +80,47 @@ acp
       block && "text" in block && typeof block.text === "string"
         ? block.text
         : "";
-    await ctx.client.notify(acp.methods.client.session.update, {
-      sessionId: ctx.params.sessionId,
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        content: {
-          type: "text",
-          text:
-            echoedReview(received) ??
-            process.env.RPRR_TEST_RESPONSE ??
-            JSON.stringify({
-              summary: `${blocked ? "write blocked" : "write succeeded"}; ${decision.outcome.outcome === "selected" ? decision.outcome.optionId : "cancelled"}`,
-              findings: [],
-            }),
+    const reviewText =
+      echoedReview(received) ??
+      process.env.RPRR_TEST_RESPONSE ??
+      JSON.stringify({
+        summary: `${blocked ? "write blocked" : "write succeeded"}; ${decision.outcome.outcome === "selected" ? decision.outcome.optionId : "cancelled"}`,
+        findings: [],
+      });
+    if (process.env.RPRR_TEST_SILENT === "1") {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "looked around" },
         },
-      },
-    });
+      });
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "read-1",
+          title: "Read plugin.php",
+          status: "completed",
+        },
+      });
+    } else if (process.env.RPRR_TEST_THOUGHT_REVIEW === "1") {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: reviewText },
+        },
+      });
+    } else {
+      await ctx.client.notify(acp.methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: reviewText },
+        },
+      });
+    }
     return { stopReason: "end_turn" };
   })
   .connect(stream);

@@ -307,6 +307,42 @@ test("a skill mismatch stays visible when the agent logs to stderr", async () =>
   }
 });
 
+test("a thought that contains the review is kept, and a silent turn keeps its trace", async () => {
+  const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
+  const fixture = fileURLToPath(
+    new URL("./fixtures/agent.ts", import.meta.url),
+  );
+  try {
+    const output = await runAgent(
+      {
+        command: process.execPath,
+        args: [fixture],
+        env: { RPRR_TEST_THOUGHT_REVIEW: "1" },
+      },
+      checkout,
+      "Review this change",
+      10,
+    );
+    expect(parseReview(output, 1).findings).toEqual([]);
+    await expect(
+      runAgent(
+        {
+          command: process.execPath,
+          args: [fixture],
+          env: { RPRR_TEST_SILENT: "1" },
+        },
+        checkout,
+        "Review this change",
+        10,
+      ),
+    ).rejects.toThrow(
+      /no review text[\s\S]*looked around[\s\S]*Read plugin.php/,
+    );
+  } finally {
+    await rm(checkout, { recursive: true, force: true });
+  }
+});
+
 test("a format follow-up does not invoke the skill again", async () => {
   const checkout = await mkdtemp(join(tmpdir(), "rprr-acp-test-"));
   const fixture = fileURLToPath(

@@ -62,7 +62,137 @@ function agentEnvironment(config: Config["agent"]): NodeJS.ProcessEnv {
   return env;
 }
 
-type AgentTurn = { response: string; commands: AdvertisedCommand[] };
+type AgentTurn = {
+  response: string;
+  commands: AdvertisedCommand[];
+  thoughts: string;
+  trace: string;
+};
+
+const traceLimit = 4_000;
+
+function note(turn: AgentTurn, line: string): void {
+  const next = `${turn.trace}${turn.trace ? "\n" : ""}${line}`;
+  turn.trace = next.length > traceLimit ? next.slice(-traceLimit) : next;
+}
+
+function field(value: object, key: string): string {
+  if (!(key in value)) return "";
+  const item = value[key as keyof typeof value];
+  return typeof item === "string" ? item : "";
+}
+
+function blockText(content: unknown): string {
+  if (!content || typeof content !== "object" || !("type" in content))
+    return "";
+  if (
+    content.type !== "text" ||
+    !("text" in content) ||
+    typeof content.text !== "string"
+  )
+    return "";
+  return content.text;
+}
+
+function blocksText(content: unknown): string | undefined {
+  if (content == null) return "";
+  if (!Array.isArray(content)) return undefined;
+  return content.map((block) => blockText(block)).join("");
+}
+
+function keepResponse(turn: AgentTurn, text: string, append: boolean): void {
+  const next = append ? turn.response + text : text;
+  if (next.length > 1_000_000) throw new Error("ACP response exceeds 1 MB");
+  turn.response = next;
+}
+
+function noteTool(turn: AgentTurn, update: object): void {
+  const title =
+    field(update, "title") ||
+    field(update, "name") ||
+    field(update, "toolCallId") ||
+    "tool";
+  const status = field(update, "status");
+  note(turn, `tool ${title}${status ? ` (${status})` : ""}`);
+}
+
+function updateContent(update: object): unknown {
+  return "content" in update ? update.content : undefined;
+}
+
+function recordReply(turn: AgentTurn, update: object, kind: string): boolean {
+  if (kind === "agent_message_chunk") {
+    const text = blockText(updateContent(update));
+    if (text) keepResponse(turn, text, true);
+    else note(turn, "agent_message_chunk without text");
+    return true;
+  }
+  if (kind !== "agent_message") return false;
+  const text = blocksText(updateContent(update));
+  if (text !== undefined) keepResponse(turn, text, false);
+  return true;
+}
+
+function rememberThought(turn: AgentTurn, text: string | undefined): void {
+  const trimmed = text?.trim();
+  if (!trimmed) return;
+  const next = `${turn.thoughts}${turn.thoughts ? "\n" : ""}${trimmed}`;
+  turn.thoughts = next.length > traceLimit ? next.slice(-traceLimit) : next;
+  note(turn, `thought: ${trimmed.slice(0, 300)}`);
+}
+
+function recordAside(turn: AgentTurn, update: object, kind: string): boolean {
+  if (kind === "agent_thought_chunk" || kind === "agent_thought") {
+    const text =
+      kind === "agent_thought"
+        ? blocksText(updateContent(update))
+        : blockText(updateContent(update));
+    rememberThought(turn, text);
+    return true;
+  }
+  if (kind === "tool_call" || kind === "tool_call_update") {
+    noteTool(turn, update);
+    return true;
+  }
+  if (kind !== "state_update") return false;
+  const reason = field(update, "stopReason");
+  note(turn, `state ${field(update, "state")} ${reason}`.trim());
+  return true;
+}
+
+function recordUpdate(turn: AgentTurn, update: object): void {
+  if (!("sessionUpdate" in update) || typeof update.sessionUpdate !== "string")
+    return;
+  const kind = update.sessionUpdate;
+  if (kind === "available_commands_update") {
+    rememberCommands(turn, update);
+    return;
+  }
+  if (recordReply(turn, update, kind) || recordAside(turn, update, kind))
+    return;
+  note(turn, kind);
+}
+
+function parsedReview(text: string): string | undefined {
+  const body = text.trim();
+  if (!body) return undefined;
+  try {
+    parseReview(body, Number.MAX_SAFE_INTEGER);
+    return body;
+  } catch {
+    return undefined;
+  }
+}
+
+function reviewFailure(turn: AgentTurn): Error {
+  const body = turn.response.trim().slice(0, 2_000);
+  const trace = turn.trace.trim();
+  const detail = [body, trace].filter(Boolean).join("\n");
+  const headline = body
+    ? "ACP agent returned a review that could not be parsed"
+    : "ACP agent returned no review text";
+  return new Error(detail ? `${headline}\n${detail}` : headline);
+}
 
 function rememberCommands(turn: AgentTurn, value: unknown): void {
   const advertised = advertisedCommands(value);
@@ -82,18 +212,35 @@ function clientSession(child: ReturnType<typeof spawn>, turn: AgentTurn) {
       permission(ctx.params),
     )
     .onNotification(acp.methods.client.session.update, (ctx) => {
-      const update = ctx.params.update;
-      if (update.sessionUpdate === "available_commands_update") {
-        rememberCommands(turn, update);
-        return;
-      }
-      if (update.sessionUpdate !== "agent_message_chunk") return;
-      if (update.content.type !== "text") return;
-      turn.response += update.content.text;
-      if (turn.response.length > 1_000_000)
-        throw new Error("ACP response exceeds 1 MB");
+      recordUpdate(turn, ctx.params.update);
     });
   return { stream, app };
+}
+
+async function promptTurn(
+  request: (
+    method: typeof acp.methods.agent.session.prompt,
+    params: {
+      sessionId: string;
+      prompt: [{ type: "text"; text: string }];
+    },
+  ) => Promise<{ stopReason?: string | null }>,
+  turn: AgentTurn,
+  sessionId: string,
+  text: string,
+): Promise<string | undefined> {
+  if (turn.response.trim())
+    note(turn, `earlier reply: ${turn.response.trim().slice(0, 1_500)}`);
+  turn.response = "";
+  const result = await request(acp.methods.agent.session.prompt, {
+    sessionId,
+    prompt: [{ type: "text", text }],
+  });
+  if (result.stopReason !== "end_turn")
+    throw new Error(
+      `ACP agent stopped: ${result.stopReason}${turn.trace.trim() ? `\n${turn.trace.trim()}` : ""}`,
+    );
+  return parsedReview(turn.response);
 }
 
 async function exchange(
@@ -102,8 +249,14 @@ async function exchange(
   prompt: string,
   skill: string | undefined,
 ): Promise<string> {
-  const turn: AgentTurn = { response: "", commands: [] };
+  const turn: AgentTurn = {
+    response: "",
+    commands: [],
+    thoughts: "",
+    trace: "",
+  };
   const { stream, app } = clientSession(child, turn);
+  let review: string | undefined;
   await app.connectWith(stream, async (ctx) => {
     const init = await ctx.request(acp.methods.agent.initialize, {
       protocolVersion: acp.PROTOCOL_VERSION,
@@ -122,24 +275,18 @@ async function exchange(
       'Complete the review now. Return only a JSON object with "summary" and "findings". Do not narrate progress.',
     ];
     for (const text of prompts) {
-      turn.response = "";
-      const result = await ctx.request(acp.methods.agent.session.prompt, {
-        sessionId: session.sessionId,
-        prompt: [{ type: "text", text }],
-      });
-      if (result.stopReason !== "end_turn")
-        throw new Error(`ACP agent stopped: ${result.stopReason}`);
-      try {
-        parseReview(turn.response, Number.MAX_SAFE_INTEGER);
-        return;
-      } catch {
-        // A follow-up turn asks the agent to finish in the required format.
-      }
+      review =
+        (await promptTurn(
+          ctx.request.bind(ctx),
+          turn,
+          session.sessionId,
+          text,
+        )) ?? parsedReview(turn.thoughts);
+      if (review) return;
     }
   });
-  if (!turn.response.trim())
-    throw new Error("ACP agent returned no review text");
-  return turn.response;
+  if (review) return review;
+  throw reviewFailure(turn);
 }
 
 async function withAgent<T>(
@@ -194,7 +341,12 @@ export async function listAgentCommands(
   cwd: string,
   timeoutSeconds: number,
 ): Promise<AdvertisedCommand[]> {
-  const turn: AgentTurn = { response: "", commands: [] };
+  const turn: AgentTurn = {
+    response: "",
+    commands: [],
+    thoughts: "",
+    trace: "",
+  };
   await withAgent(config, cwd, timeoutSeconds, async (child) => {
     const { stream, app } = clientSession(child, turn);
     await app.connectWith(stream, async (ctx) => {
@@ -219,7 +371,12 @@ export async function probeAgentHandshake(
   cwd: string,
   timeoutSeconds: number,
 ): Promise<void> {
-  const turn: AgentTurn = { response: "", commands: [] };
+  const turn: AgentTurn = {
+    response: "",
+    commands: [],
+    thoughts: "",
+    trace: "",
+  };
   await withAgent(config, cwd, timeoutSeconds, async (child) => {
     const { stream, app } = clientSession(child, turn);
     await app.connectWith(stream, async (ctx) => {
