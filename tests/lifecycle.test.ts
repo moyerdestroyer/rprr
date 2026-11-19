@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import mascot from "../assets/mascot.txt" with { type: "text" };
 import { pollLaunch, renderUnits } from "../src/service.ts";
 import { ReviewStore } from "../src/state.ts";
 
@@ -111,7 +112,7 @@ test("repeatable setup and service lifecycle stay inside an isolated home", asyn
   expect((await cli("config", "validate")).code).toBe(0);
   expect((await cli("config", "set", "review.publish", "maybe")).code).toBe(1);
   expect((await cli("service", "enable")).code).toBe(0);
-  const status = JSON.parse((await cli("status")).stdout);
+  const status = JSON.parse((await cli("status", "--json")).stdout);
   expect(status.service.installed).toBe(true);
   expect(status.jobs).toEqual([]);
   expect((await cli("service", "uninstall")).code).toBe(0);
@@ -288,7 +289,15 @@ test("drafts command lists locally recorded pending reviews", async () => {
   }
   const drafts = await cli("drafts");
   expect(drafts.code).toBe(0);
-  expect(JSON.parse(drafts.stdout)).toMatchObject([
+  expect(drafts.stdout).toContain("1 draft to review");
+  expect(drafts.stdout).toContain("1. org/repo#12");
+  expect(drafts.stdout).toContain(
+    "https://github.com/org/repo/pull/12#pullrequestreview-52",
+  );
+  expect(drafts.stdout).toContain("--publish");
+  expect(drafts.stdout).not.toContain("a".repeat(40));
+  expect(drafts.stdout).not.toContain("\u001b");
+  expect(JSON.parse((await cli("drafts", "--json")).stdout)).toMatchObject([
     {
       url: "https://github.com/org/repo/pull/12",
       reviewUrl: "https://github.com/org/repo/pull/12#pullrequestreview-52",
@@ -312,4 +321,164 @@ test("setup rejects broken authentication and a missing agent without writing co
     1,
   );
   await expect(readFile(config)).rejects.toThrow();
+});
+
+test("empty drafts and status offer clear next steps without configuration", async () => {
+  const { cli } = await fixture();
+  expect((await cli("drafts")).stdout).toContain("No locally tracked drafts.");
+  expect((await cli("drafts")).stdout).toContain("rprr poll");
+  expect(JSON.parse((await cli("drafts", "--json")).stdout)).toEqual([]);
+  const status = await cli("status");
+  expect(status.code).toBe(0);
+  expect(status.stdout).toContain("RPRR / Needs attention");
+  expect(status.stdout).toContain("Last poll: not run yet");
+  expect(status.stdout).toContain("Health: rprr doctor");
+  expect(status.stdout).toContain("0 drafts ready");
+  expect(status.stdout).not.toContain('"jobs"');
+  expect((await cli("status", "--failures")).stdout).toContain("No failed PRs");
+});
+
+test("status summarizes all current PRs and provides local failure inspection", async () => {
+  const { env, cli } = await fixture();
+  const store = await ReviewStore.open(
+    join(env.XDG_STATE_HOME, "rprr", "reviews.sqlite"),
+  );
+  const error =
+    "Agent timed out\nCheck agent credentials before retrying.\n\u001b[31mAgent detail\u001b[0m";
+  try {
+    const failed = store.claim("org/repo", 12, "failed-head", "ryan", 30);
+    const blocked = store.claim("org/repo", 13, "blocked-head", "ryan", 30);
+    const recovered = store.claim("org/repo", 14, "old-head", "ryan", 30);
+    if (!failed || !blocked || !recovered) throw new Error("Missing claims");
+    store.fail(failed, error);
+    store.fail(blocked, "Review budget exceeded", "budget-key");
+    store.fail(recovered, "Old error that should be hidden");
+    store.recordPosted("org/repo", 14, "new-head", 53, "PENDING");
+    for (let number = 20; number < 45; number++)
+      store.recordPosted(
+        "org/repo",
+        number,
+        "done-head",
+        number + 100,
+        "COMMENTED",
+      );
+    store.recordPosted("org/repo", 15, "draft-head", 54, "PENDING");
+    store.claim("org/repo", 16, "running-head", "ryan", 30);
+    const poll = store.startPoll();
+    store.finishPoll(poll, {
+      discovered: 4,
+      completed: 2,
+      skipped: 0,
+      failed: 2,
+    });
+  } finally {
+    store.close();
+  }
+  const summary = await cli("status");
+  expect(summary.code).toBe(0);
+  expect(summary.stdout).toContain("RPRR / Needs attention");
+  expect(summary.stdout).toContain(
+    "2 drafts ready / 1 reviewing / 2 need attention",
+  );
+  expect(summary.stdout).toContain("rprr status --failures");
+  expect(summary.stdout).not.toContain("Agent timed out");
+  expect(summary.stdout).not.toContain("failed-head");
+  expect(summary.stdout.trim().split("\n").length).toBeLessThanOrEqual(
+    mascot.trimEnd().split("\n").length + 12,
+  );
+  const failures = await cli("status", "--failures");
+  expect(failures.code).toBe(0);
+  expect(failures.stdout).toContain("org/repo#12 / failed");
+  expect(failures.stdout).toContain("org/repo#13 / blocked");
+  expect(failures.stdout).toContain("Agent timed out");
+  expect(failures.stdout).not.toContain("Check agent credentials");
+  expect(failures.stdout).not.toContain("org/repo#14");
+  expect(failures.stdout).toContain(
+    "rprr status https://github.com/org/repo/pull/12",
+  );
+  const detail = await cli("status", "https://github.com/org/repo/pull/12");
+  expect(detail.code).toBe(0);
+  expect(detail.stdout).toContain("Check agent credentials before retrying.");
+  expect(detail.stdout).toContain("Agent detail");
+  expect(detail.stdout).not.toContain("\u001b");
+  expect(detail.stdout).toContain(
+    "Retry: rprr review https://github.com/org/repo/pull/12",
+  );
+  expect((await cli("status", "ORG/REPO#13")).stdout).toContain(
+    "Automatic retry waits for changed inputs",
+  );
+  expect((await cli("status", "org/repo#15")).stdout).toContain(
+    "Draft: https://github.com/org/repo/pull/15#pullrequestreview-54",
+  );
+  expect((await cli("status", "org/repo#999")).stderr).toContain(
+    "No locally tracked review",
+  );
+  expect((await cli("status", "not-a-pr")).code).toBe(1);
+});
+
+test("a failed poll can be investigated even without any PR jobs", async () => {
+  const { env, cli } = await fixture();
+  const store = await ReviewStore.open(
+    join(env.XDG_STATE_HOME, "rprr", "reviews.sqlite"),
+  );
+  try {
+    store.failPoll(
+      store.startPoll(),
+      "GitHub request search failed\nAuthentication expired",
+    );
+  } finally {
+    store.close();
+  }
+  const summary = await cli("status");
+  expect(summary.stdout).toContain("rprr status --failures");
+  expect(summary.stdout).not.toContain("Authentication expired");
+  const failures = await cli("status", "--failures");
+  expect(failures.stdout).toContain("Authentication expired");
+  expect(failures.stdout).toContain("rprr doctor");
+  expect(failures.stdout).toContain("No failed PRs");
+});
+
+test("drafts and status reject unsupported or combined options", async () => {
+  const { cli } = await fixture();
+  for (const args of [
+    ["drafts", "--unknown"],
+    ["drafts", "--json", "extra"],
+    ["status", "--unknown"],
+    ["status", "--json", "--failures"],
+  ]) {
+    const result = await cli(...args);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("accepts");
+  }
+});
+
+test("healthy status distinguishes ready and actively reviewing", async () => {
+  const { env, cli } = await fixture();
+  expect(
+    (
+      await cli(
+        "setup",
+        "--agent-command",
+        process.execPath,
+        "--skip-agent-probe",
+      )
+    ).code,
+  ).toBe(0);
+  const ready = await cli("status");
+  expect(ready.code).toBe(0);
+  expect(ready.stdout).toContain("RPRR / Ready");
+  expect(ready.stdout).not.toContain("Health: rprr doctor");
+  const store = await ReviewStore.open(
+    join(env.XDG_STATE_HOME, "rprr", "reviews.sqlite"),
+  );
+  try {
+    store.claim("org/repo", 12, "head", "ryan", 30);
+    store.startPoll();
+  } finally {
+    store.close();
+  }
+  const reviewing = await cli("status");
+  expect(reviewing.stdout).toContain("RPRR / Reviewing");
+  expect(reviewing.stdout).toContain("1 reviewing");
+  expect(reviewing.stdout).toContain("(running)");
 });

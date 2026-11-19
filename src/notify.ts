@@ -1,23 +1,11 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import mascot from "../assets/mascot-v3.png";
+import { appPaths } from "./config.ts";
 import type { PullRequest, RemoteReview } from "./github.ts";
 
-const emptyIcon =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"></svg>';
-
-function usesCinnamon(): boolean {
-  return (
-    process.env.XDG_CURRENT_DESKTOP?.split(":").includes("X-Cinnamon") ?? false
-  );
-}
-
-async function notificationAssets(): Promise<{
-  iconPath: string;
-  imagePath?: string;
-  cleanup: () => Promise<void>;
-} | null> {
+async function notificationIcon(): Promise<string> {
   const embedded = Bun.embeddedFiles.find(
     (file) =>
       "name" in file &&
@@ -25,45 +13,21 @@ async function notificationAssets(): Promise<{
       file.name.startsWith("mascot-v3-") &&
       file.name.endsWith(".png"),
   );
-  if (embedded) {
-    const directory = await mkdtemp(join(tmpdir(), "rprr-notify-"));
-    const path = join(directory, "mascot-v3.png");
-    try {
-      await writeFile(path, Buffer.from(await embedded.arrayBuffer()));
-      if (usesCinnamon()) {
-        const iconPath = join(directory, "empty-icon.svg");
-        await writeFile(iconPath, emptyIcon);
-        return {
-          iconPath,
-          imagePath: path,
-          cleanup: () => rm(directory, { recursive: true, force: true }),
-        };
-      }
-    } catch (error) {
-      await rm(directory, { recursive: true, force: true });
-      throw error;
-    }
-    return {
-      iconPath: path,
-      cleanup: () => rm(directory, { recursive: true, force: true }),
-    };
-  }
-  const path = mascot;
-  if (!(await Bun.file(path).exists())) return null;
-  if (!usesCinnamon()) return { iconPath: path, cleanup: async () => {} };
-  const directory = await mkdtemp(join(tmpdir(), "rprr-notify-"));
-  const iconPath = join(directory, "empty-icon.svg");
+  const data = Buffer.from(await (embedded ?? Bun.file(mascot)).arrayBuffer());
+  const digest = createHash("sha256").update(data).digest("hex").slice(0, 16);
+  const directory = join(appPaths().cache, "notifications");
+  const path = join(directory, `mascot-v3-${digest}.png`);
+  if (await Bun.file(path).exists()) return path;
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
   try {
-    await writeFile(iconPath, emptyIcon);
-  } catch (error) {
-    await rm(directory, { recursive: true, force: true });
-    throw error;
+    await writeFile(temporary, data, { flag: "wx", mode: 0o600 });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
   }
-  return {
-    iconPath,
-    imagePath: path,
-    cleanup: () => rm(directory, { recursive: true, force: true }),
-  };
+  // The daemon may load images after notify-send exits, or when reopening history.
+  return path;
 }
 
 export async function notifyDraft(
@@ -72,17 +36,22 @@ export async function notifyDraft(
 ): Promise<void> {
   const executable = Bun.which("notify-send");
   if (!executable) return;
-  let assets: Awaited<ReturnType<typeof notificationAssets>> = null;
   try {
-    assets = await notificationAssets();
+    const icon = await notificationIcon().catch(() => undefined);
+    const cinnamon = process.env.XDG_CURRENT_DESKTOP?.split(":").some(
+      (desktop) => desktop.toLowerCase().includes("cinnamon"),
+    );
     const child = Bun.spawn(
       [
         executable,
         "--app-name=RPRR",
-        ...(assets ? [`--icon=${assets.iconPath}`] : []),
-        ...(assets?.imagePath
-          ? [`--hint=string:image-path:${assets.imagePath}`]
-          : []),
+        // Cinnamon and GNOME use urgency to control banner duration separately
+        // from notification expiry. The draft requires the reviewer's attention.
+        "--urgency=critical",
+        "--expire-time=0",
+        "--hint=boolean:resident:true",
+        ...(icon ? [`--icon=${icon}`] : []),
+        ...(icon && cinnamon ? [`--hint=string:image-path:${icon}`] : []),
         "Draft review ready",
         `${pr.repository}#${pr.number}\n${review.url}`,
       ],
@@ -96,7 +65,5 @@ export async function notifyDraft(
     }
   } catch {
     // Desktop notifications are optional; the draft is recorded in local state.
-  } finally {
-    await assets?.cleanup();
   }
 }

@@ -32,6 +32,32 @@ async function run(
   return stdout.trim();
 }
 
+async function checkHumanCommands(
+  executable: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  mascot: string,
+): Promise<void> {
+  const drafts = await run([executable, "drafts"], cwd, env);
+  if (!drafts.includes("No locally tracked drafts."))
+    throw new Error("Installed drafts command did not render its empty state");
+  const json = JSON.parse(
+    await run([executable, "drafts", "--json"], cwd, env),
+  );
+  if (!Array.isArray(json) || json.length !== 0)
+    throw new Error("Installed drafts --json did not return an empty array");
+  const status = await run([executable, "status"], cwd, env);
+  if (!status.includes(mascot.trim()) || !status.includes("RPRR / Ready"))
+    throw new Error(
+      "Installed status command did not render the mascot and summary",
+    );
+  const snapshot = JSON.parse(
+    await run([executable, "status", "--json"], cwd, env),
+  );
+  if (!Array.isArray(snapshot.jobs) || snapshot.jobs.length !== 0)
+    throw new Error("Installed status --json did not return a health snapshot");
+}
+
 const root = join(import.meta.dir, "..");
 const temporary = await mkdtemp(join(tmpdir(), "rprr-package-check-"));
 try {
@@ -58,6 +84,7 @@ try {
     "package/examples/systemd/rprr.timer",
     "package/prompts/review.md",
     "package/assets/mascot-v3.png",
+    "package/assets/mascot.txt",
     "package/assets/mascot-banner-v2.png",
   ]) {
     if (!entries.includes(expected))
@@ -129,6 +156,13 @@ try {
   );
   if (!unit.includes(`ExecStart=${JSON.stringify(hostBinary)} "poll"`))
     throw new Error("Compiled CLI service does not run its own binary");
+  const smokeEnv = {
+    ...env,
+    PATH: `${serviceTools}:${process.env.PATH ?? ""}`,
+  };
+  const mascot = await readFile(join(root, "assets", "mascot.txt"), "utf8");
+  await checkHumanCommands(installed, temporary, smokeEnv, mascot);
+  await checkHumanCommands(hostBinary, temporary, smokeEnv, mascot);
   console.log(
     `Packed ${entries.length} files and started the CLI from an isolated global installation`,
   );

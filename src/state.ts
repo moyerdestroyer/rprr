@@ -208,6 +208,24 @@ export class ReviewStore {
       .all() as ReviewJob[];
   }
 
+  currentJobs(): ReviewJob[] {
+    return this.db
+      .query(`
+        SELECT id, repository, pr_number, head_sha, base_sha,
+          CASE WHEN blocked_key IS NOT NULL THEN 'blocked' ELSE status END AS status,
+          started_at, completed_at, published_review_id AS review_id, review_state, error
+        FROM reviews WHERE id IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (
+              PARTITION BY repository, pr_number
+              ORDER BY COALESCE(completed_at, started_at, '') DESC, id DESC
+            ) AS position FROM reviews
+          ) WHERE position = 1
+        ) ORDER BY COALESCE(completed_at, started_at, '') DESC, id DESC
+      `)
+      .all() as ReviewJob[];
+  }
+
   recordPosted(
     repository: string,
     number: number,

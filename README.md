@@ -49,8 +49,10 @@ rprr review https://github.com/OWNER/REPO/pull/123 --dry-run
 rprr review https://github.com/OWNER/REPO/pull/123            # create a draft
 rprr review https://github.com/OWNER/REPO/pull/123 --publish  # submit the draft
 rprr poll                  # draft direct review requests once
-rprr drafts                # list locally tracked pending reviews
-rprr status                # health, last poll, service, and recent jobs
+rprr drafts                # clickable links to locally tracked draft reviews
+rprr status                # mascot, health summary, and review counts
+rprr status --failures     # failed or blocked PRs and inspection commands
+rprr status OWNER/REPO#123 # inspect a PR's latest local review and retry command
 rprr service install       # install local timer, disabled
 rprr service enable        # explicitly start automatic polling
 ```
@@ -96,7 +98,11 @@ Reviews use the PR's three-dot diff, so updates to the base branch do not appear
 
 Diffs are reviewed in chunks of at most `review.maxDiffBytes` (default 500000), with at most `review.maxChunks` chunks (default 20). A file that still cannot fit is left out of the review and named in the summary; the other files are still reviewed. `review.excludePaths` takes glob patterns for paths to drop before the diff is read. Those excluded paths are named separately from files omitted for size. Clone and diff commands use `review.timeoutSeconds`. Other failures stay retryable, and `rprr review` tries a failed PR again immediately.
 
-GitHub sends the reviewer its usual review-request notification. After RPRR creates a draft, it attempts a local desktop notification with the RPRR mascot icon via `notify-send` when available. A background timer or cron job may run without a desktop notification session, so the toast is best effort. `rprr drafts` and `rprr status` show locally tracked drafts even if no toast appears. `rprr poll` runs one pass immediately; the timer checks every 15 minutes.
+`rprr drafts` shows a numbered list of direct GitHub draft-review links, with instructions for submitting on GitHub or from the CLI. It reads local state; submitting or deleting a draft on GitHub may not immediately update the list. Use `rprr drafts --json` for the original machine-readable output.
+
+`rprr status` shows the text mascot and a short health summary, draft and active-review counts, the last poll, and timer status. The mascot uses Unicode block characters and needs 73 terminal columns; the summary sits beside it in wide terminals and below it otherwise. Counts use the latest locally tracked review for each PR, so a newer successful review clears an older failure from the summary. `rprr status --failures` lists failed and blocked PRs; `rprr status OWNER/REPO#123` or `rprr status https://github.com/OWNER/REPO/pull/123` shows the full recorded error and a retry command. Failed polls can also be investigated with `--failures`, even when no PR was discovered. `rprr doctor` checks configuration and authentication; `rprr status --json` retains recent job history and the detailed health/service snapshot.
+
+GitHub sends the reviewer its usual review-request notification. After RPRR creates a draft, it attempts a local desktop notification with the RPRR mascot icon via `notify-send` when available. The mascot stays in the XDG cache so desktop notification history can still load it after RPRR exits. Draft notifications request no expiry, residency in notification history, and critical urgency so desktops that ignore expiry still give the banner more time. The desktop controls the final presentation: Cinnamon may move a banner to its notification applet after about ten seconds, while other desktops keep it visible until dismissed. A background timer or cron job may run without a desktop notification session, so the toast is best effort. `rprr drafts` and `rprr status` show locally tracked drafts even if no toast appears. `rprr poll` runs one pass immediately; the timer checks every 15 minutes.
 
 For recurring local runs, see the [systemd user timer and cron setup](docs/scheduling.md). Scheduling is opt-in and runs under your own account.
 

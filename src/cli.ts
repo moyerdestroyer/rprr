@@ -1,12 +1,12 @@
 import { resolveAgentCommand } from "./agent-command.ts";
 import { appPaths, loadConfig } from "./config.ts";
 import { configCommand } from "./config-command.ts";
+import { draftsCommand } from "./drafts-command.ts";
 import { currentLogin, requestedPullRequests } from "./github.ts";
 import {
   advertisedSkills,
   commandAvailable,
   githubAuthenticated,
-  healthSnapshot,
   probeAgent,
 } from "./health.ts";
 import { pollRequested } from "./poll.ts";
@@ -22,6 +22,7 @@ import {
 } from "./service.ts";
 import { setup } from "./setup.ts";
 import { ReviewStore } from "./state.ts";
+import { statusCommand } from "./status-command.ts";
 import { version } from "./version.ts";
 
 const help = `rprr — Ryan's PR Reviewer
@@ -35,8 +36,8 @@ Usage:
   rprr skills
   rprr review <PR-number-or-URL> [--publish|--dry-run]
   rprr poll
-  rprr drafts
-  rprr status
+  rprr drafts [--json]
+  rprr status [--failures|--json|PR-URL|OWNER/REPO#NUMBER]
   rprr service install|enable|disable|status|uninstall
   rprr --help
   rprr --version
@@ -120,46 +121,6 @@ async function poll(): Promise<void> {
       error instanceof Error ? error.message : String(error),
     );
     throw error;
-  } finally {
-    store.close();
-  }
-}
-
-async function drafts(): Promise<void> {
-  const store = await ReviewStore.open();
-  try {
-    console.log(
-      JSON.stringify(
-        store.drafts().map((job) => ({
-          url: `https://github.com/${job.repository}/pull/${job.pr_number}`,
-          reviewUrl: `https://github.com/${job.repository}/pull/${job.pr_number}#pullrequestreview-${job.review_id}`,
-          reviewId: job.review_id,
-          head: job.head_sha,
-        })),
-        null,
-        2,
-      ),
-    );
-  } finally {
-    store.close();
-  }
-}
-
-async function status(): Promise<void> {
-  const store = await ReviewStore.open();
-  try {
-    console.log(
-      JSON.stringify(
-        {
-          lastPoll: store.latestPoll(),
-          jobs: store.recent(),
-          health: await healthSnapshot(),
-          service: await serviceStatus(),
-        },
-        null,
-        2,
-      ),
-    );
   } finally {
     store.close();
   }
@@ -318,12 +279,10 @@ export async function runCli(args: string[]): Promise<void> {
         await poll();
         break;
       case "drafts":
-        if (rest.length) throw new Error("drafts accepts no arguments");
-        await drafts();
+        await draftsCommand(rest);
         break;
       case "status":
-        if (rest.length) throw new Error("status does not accept arguments");
-        await status();
+        await statusCommand(rest);
         break;
       case "service":
         await service(rest);
